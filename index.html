@@ -90,7 +90,7 @@ License: MIT
 <body>
 
 <header class="topbar">
-  <h1>Sales Data Analytics Tool</h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v2 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
     <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
     <span id="dropLabel">Choose CSV (or drag &amp; drop)</span>
@@ -389,10 +389,11 @@ License: MIT
     Papa.parse(file, {
       header: true, skipEmptyLines: true, dynamicTyping: false,
       complete: function (res) {
+        try {
         // Papa with header:true gives res.data as array of objects; re-derive positional rows.
         var fields = res.meta.fields;
         var rowsArr = res.data.map(function (o) { return fields.map(function (f) { return o[f]; }); });
-        parsed = Core.parseCsvData(fields, rowsArr);
+        var parsed = Core.parseCsvData(fields, rowsArr);
         if (!parsed.rows.length && !parsed.errors.length) { showError("No valid data rows found in CSV."); return; }
         state.allRows = parsed.rows;
         state.products = Array.from(new Set(parsed.rows.map(function (r) { return r.articleId; }))).sort();
@@ -401,6 +402,7 @@ License: MIT
         document.getElementById("rowCount").textContent = parsed.rows.length.toLocaleString() + " valid rows";
         buildFilters();
         renderAll();
+        } catch (e) { showError("Unexpected error while loading CSV: " + e.message); console.error(e); }
       },
       error: function (err) { showError("Failed to parse CSV: " + err.message); }
     });
@@ -539,9 +541,13 @@ License: MIT
   var fileInput = document.getElementById("fileInput");
   var dropZone = document.getElementById("dropZone");
   fileInput.addEventListener("change", function () { handleFile(fileInput.files[0]); });
-  ["dragenter", "dragover"].forEach(function (ev) { dropZone.addEventListener(ev, function (e) { e.preventDefault(); dropZone.classList.add("dragover"); }); });
-  ["dragleave", "drop"].forEach(function (ev) { dropZone.addEventListener(ev, function (e) { e.preventDefault(); dropZone.classList.remove("dragover"); }); });
-  dropZone.addEventListener("drop", function (e) { if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]); });
+  // Accept drops anywhere on the page, not just on the small label.
+  window.addEventListener("dragover", function (e) { e.preventDefault(); });
+  window.addEventListener("drop", function (e) {
+    e.preventDefault();
+    dropZone.classList.remove("dragover");
+    if (e.dataTransfer && e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
 
   document.getElementById("countrySelect").addEventListener("change", renderAll);
   document.querySelectorAll('input[name="agg"]').forEach(function (r) { r.addEventListener("change", function () { state.aggMode = this.value; renderAll(); }); });
