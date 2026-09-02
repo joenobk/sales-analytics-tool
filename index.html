@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sales Data Analytics Tool</title>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel2: #26334a; --text: #e2e8f0;
+    --muted: #94a3b8; --accent: #38bdf8; --good: #34d399; --bad: #f87171; --border: #334155;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+  header.topbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header.topbar h1 { font-size: 1.15rem; font-weight: 600; }
+  .dropzone { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border: 2px dashed var(--border); border-radius: 8px; cursor: pointer; color: var(--muted); font-size: .9rem; transition: all .15s; }
+  .dropzone:hover, .dropzone.dragover { border-color: var(--accent); color: var(--accent); background: rgba(56,189,248,.08); }
+  .dropzone.loaded { border-style: solid; border-color: var(--good); color: var(--good); }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: .9rem; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: #0369a1; border-color: #0284c7; }
+  button.primary:hover { background: #0284c7; }
+  .layout { display: grid; grid-template-columns: 250px 1fr; gap: 16px; padding: 16px 20px; flex: 1; align-items: start; }
+  aside.sidebar { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; position: sticky; top: 16px; }
+  .filter-group { margin-bottom: 18px; }
+  .filter-group h3 { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 8px; }
+  select, input[type=text], input[type=password], textarea { width: 100%; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 7px 9px; font-size: .85rem; }
+  .checklist { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+  .checklist label { display: flex; align-items: center; gap: 6px; font-size: .85rem; cursor: pointer; padding: 2px 0; }
+  .radio-row { display: flex; gap: 12px; }
+  .radio-row label { display: flex; align-items: center; gap: 5px; font-size: .85rem; cursor: pointer; }
+  main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .kpi-card .label { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 6px; }
+  .kpi-card .value { font-size: 1.3rem; font-weight: 700; word-break: break-word; }
+  .kpi-card .sub { font-size: .75rem; color: var(--muted); margin-top: 4px; }
+  .panel-title { font-size: .95rem; font-weight: 600; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #chartWrap { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; height: 380px; position: relative; }
+  .country-list { display: flex; flex-direction: column; gap: 6px; font-size: .85rem; }
+  .country-row { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 8px; }
+  .bar-track { background: var(--panel2); border-radius: 4px; height: 10px; overflow: hidden; }
+  .bar-fill { background: var(--accent); height: 100%; border-radius: 4px; }
+  section.ai-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .ai-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .field label { display: block; font-size: .75rem; color: var(--muted); margin-bottom: 4px; }
+  textarea { resize: vertical; min-height: 60px; }
+  #aiOutput { white-space: pre-wrap; background: var(--panel2); border-radius: 8px; padding: 12px; font-size: .85rem; line-height: 1.5; margin-top: 12px; min-height: 60px; color: var(--text); }
+  #aiOutput.empty { color: var(--muted); font-style: italic; }
+  .error-banner { background: rgba(248,113,113,.12); border: 1px solid var(--bad); color: var(--bad); border-radius: 8px; padding: 10px 14px; font-size: .9rem; display: none; }
+  .muted { color: var(--muted); font-size: .85rem; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } aside.sidebar { position: static; } }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>Sales Data Analytics Tool</h1>
+  <label class="dropzone" id="dropZone">
+    <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
+    <span id="dropLabel">Choose CSV (or drag &amp; drop)</span>
+  </label>
+  <button id="resetBtn" title="Reset all filters">Reset filters</button>
+  <span class="muted" id="rowCount"></span>
+</header>
+
+<div class="error-banner" id="errorBanner"></div>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="filter-group">
+      <h3>Products (Article ID)</h3>
+      <div class="checklist" id="productList"><span class="muted">Load a CSV first</span></div>
+    </div>
+    <div class="filter-group">
+      <h3>Country</h3>
+      <select id="countrySelect"><option value="">All countries</option></select>
+    </div>
+    <div class="filter-group">
+      <h3>Aggregation</h3>
+      <div class="radio-row" id="aggRow">
+        <label><input type="radio" name="agg" value="day" checked> Day</label>
+        <label><input type="radio" name="agg" value="week"> Week</label>
+        <label><input type="radio" name="agg" value="month"> Month</label>
+      </div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="kpi-row">
+      <div class="card kpi-card"><div class="label">Total units</div><div class="value" id="kpiTotal">–</div></div>
+      <div class="card kpi-card"><div class="label">Top product</div><div class="value" id="kpiTop">–</div><div class="sub" id="kpiTopSub"></div></div>
+      <div class="card kpi-card"><div class="label">Bottom product</div><div class="value" id="kpiBottom">–</div><div class="sub" id="kpiBottomSub"></div></div>
+      <div class="card kpi-card"><div class="label">Trend</div><div class="value" id="kpiTrend">–</div><div class="sub" id="kpiTrendSub"></div></div>
+      <div class="card kpi-card"><div class="label">Seasonality</div><div class="value" id="kpiSeason">–</div><div class="sub" id="kpiSeasonSub"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="panel-title">Units sold over time</div>
+      <div id="chartWrap"><canvas id="mainChart"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="panel-title">Sales by country</div>
+      <div class="country-list" id="countryList"><span class="muted">No data loaded</span></div>
+    </div>
+
+    <section class="ai-panel">
+      <div class="panel-title">
+        AI Analysis
+        <button id="toggleSettingsBtn">⚙ Settings</button>
+      </div>
+      <div id="aiSettings" style="display:none">
+        <div class="ai-settings">
+          <div class="field"><label>API base URL</label><input type="text" id="cfgBaseUrl" placeholder="https://api.openai.com/v1"></div>
+          <div class="field"><label>API key</label><input type="password" id="cfgApiKey" placeholder="sk-... (stored only in this browser)"></div>
+          <div class="field"><label>Model name</label><input type="text" id="cfgModel" placeholder="gpt-4o-mini"></div>
+          <div class="field"><label>Temperature: <span id="tempVal">0.2</span></label><input type="range" id="cfgTemp" min="0" max="1" step="0.1" value="0.2"></div>
+        </div>
+        <div class="field" style="margin-bottom:12px"><label>System prompt</label>
+          <textarea id="cfgPrompt">You are a senior sales analyst. Provide concise, actionable insights based on the provided data.</textarea>
+        </div>
+      </div>
+      <button class="primary" id="analyzeBtn">Analyze</button>
+      <span class="muted" style="margin-left:8px">Sends a compact summary of the filtered view to your configured API. Falls back to statistics when unconfigured.</span>
+      <div id="aiOutput" class="empty">No analysis yet — load data and click Analyze.</div>
+      <button id="copyBtn" style="margin-top:10px;display:none">Copy to clipboard</button>
+    </section>
+  </main>
+</div>
+
+<script>
+/* ============================================================
+ * SalesCore — pure, DOM-free logic (unit-testable in Node)
+ * ============================================================ */
+(function () {
+  "use strict";
+
+  function normalizeHeader(h) { return String(h == null ? "" : h).replace(/[^a-z0-9]/gi, "").toLowerCase(); }
+
+  // Accepts a YYYYMMDD integer or string; returns Date at local midnight, or null if invalid.
+  function parseDateValue(v) {
+    var s = String(v == null ? "" : v).trim();
+    if (!/^\d{8}$/.test(s)) return null;
+    var y = parseInt(s.slice(0, 4), 10);
+    var m = parseInt(s.slice(4, 6), 10);
+    var d = parseInt(s.slice(6, 8), 10);
+    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+    var dt = new Date(y, m - 1, d);
+    if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
+    return dt;
+  }
+
+  // Validates headers + rows. Returns {rows:[{date, articleId, countryCode, units}], errors:[]}
+  function parseCsvData(header, dataRows) {
+    var REQUIRED = ["date", "articleid", "countrycode", "soldunits"];
+    var idx = {};
+    (header || []).forEach(function (h, i) { idx[normalizeHeader(h)] = i; });
+    var missing = REQUIRED.filter(function (r) { return !(r in idx); });
+    if (missing.length) {
+      return { rows: [], errors: ["Missing required column(s): " + missing.join(", ") + ". Found columns: " + (header || []).join(", ")] };
+    }
+    var rows = [], badDates = 0, badUnits = 0;
+    dataRows.forEach(function (r) {
+      if (!r || r.length === 0) return;
+      var date = parseDateValue(r[idx.date]);
+      if (!date) { badDates++; return; }
+      var units = parseInt(String(r[idx.soldunits]).replace(/[^0-9.-]/g, ""), 10);
+      if (isNaN(units)) { badUnits++; return; }
+      rows.push({
+        date: date,
+        articleId: String(r[idx.articleid] == null ? "" : r[idx.articleid]).trim(),
+        countryCode: String(r[idx.countrycode] == null ? "" : r[idx.countrycode]).trim().toUpperCase(),
+        units: units
+      });
+    });
+    var errors = [];
+    if (badDates) errors.push(badDates + " row(s) skipped due to invalid Date (expected YYYYMMDD).");
+    if (badUnits) errors.push(badUnits + " row(s) skipped due to non-numeric Sold_Units.");
+    return { rows: rows, errors: errors };
+  }
+
+  function startOfWeek(d) { // Monday-based week start
+    var dt = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    var dow = (dt.getDay() + 6) % 7; // Mon=0..Sun=6
+    dt.setDate(dt.getDate() - dow);
+    return dt;
+  }
+
+  function bucketFor(date, mode) { // -> {key, t} where t is a sortable epoch ms
+    var y = date.getFullYear(), m = String(date.getMonth() + 1).padStart(2, "0");
+    if (mode === "week") { var w = startOfWeek(date); return { key: String(w.getTime()), t: w.getTime() }; }
+    if (mode === "month") return { key: y + "-" + m, t: new Date(y, date.getMonth(), 1).getTime() };
+    return { key: y + "-" + m + "-" + String(date.getDate()).padStart(2, "0"), t: date.getTime() };
+  }
+
+  function bucketLabel(key, mode) {
+    if (mode === "month") { var p = key.split("-"); return new Date(+p[0], +p[1] - 1, 1).toLocaleDateString(undefined, { month: "short", year: "numeric" }); }
+    if (mode === "week") return "Wk of " + new Date(parseInt(key, 10)).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    var p2 = key.split("-"); return new Date(+p2[0], +p2[1] - 1, +p2[2]).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  // rows -> [{key,label,t,units}] sorted by time
+  function aggregate(rows, mode) {
+    var map = new Map();
+    rows.forEach(function (r) {
+      var b = bucketFor(r.date, mode);
+      if (!map.has(b.key)) map.set(b.key, { t: b.t, units: 0 });
+      map.get(b.key).units += r.units;
+    });
+    return Array.from(map.entries()).sort(function (a, b) { return a[1].t - b[1].t; })
+      .map(function (e) { return { key: e[0], t: e[1].t, label: bucketLabel(e[0], mode), units: e[1].units }; });
+  }
+
+  function linearRegressionSlope(values) {
+    var n = values.length;
+    if (n < 2) return 0;
+    var sx = 0, sy = 0, sxy = 0, sxx = 0;
+    for (var i = 0; i < n; i++) { sx += i; sy += values[i]; sxy += i * values[i]; sxx += i * i; }
+    return (n * sxy - sx * sy) / (n * sxx - sx * sx || 1);
+  }
+
+  function median(values) {
+    if (!values.length) return 0;
+    var s = values.slice().sort(function (a, b) { return a - b; });
+    var mid = Math.floor(s.length / 2);
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  }
+
+  // Full stats for the filtered rows.
+  function computeStats(rows, aggMode) {
+    var total = 0, byProduct = {}, byCountry = {};
+    var monthOfYear = {}; // m -> {sum, days:Set}
+    var dates = [];
+    rows.forEach(function (r) {
+      total += r.units;
+      byProduct[r.articleId] = (byProduct[r.articleId] || 0) + r.units;
+      byCountry[r.countryCode] = (byCountry[r.countryCode] || 0) + r.units;
+      var m = r.date.getMonth();
+      if (!monthOfYear[m]) monthOfYear[m] = { sum: 0, days: new Set() };
+      monthOfYear[m].sum += r.units;
+      monthOfYear[m].days.add(r.date.getTime());
+      dates.push(r.date);
+    });
+    var series = aggregate(rows, aggMode);
+    var slope = linearRegressionSlope(series.map(function (b) { return b.units; }));
+    var meanPerBucket = total / Math.max(1, series.length);
+    var trendPct = meanPerBucket ? slope / meanPerBucket : 0;
+
+    // Seasonality: avg units per day by calendar month vs overall daily average.
+    var allDays = new Set(dates.map(function (d) { return d.getTime(); }));
+    var overallDailyAvg = total / Math.max(1, allDays.size);
+    var season = Object.keys(monthOfYear).map(function (m) {
+      var info = monthOfYear[m];
+      var avgPerDay = info.sum / info.days.size;
+      return { month: m, name: new Date(2000, +m, 1).toLocaleDateString(undefined, { month: "long" }), avgPerDay: avgPerDay, deviationPct: overallDailyAvg ? (avgPerDay - overallDailyAvg) / overallDailyAvg : 0 };
+    }).sort(function (a, b) { return a.month - b.month; });
+    var peak = season.slice().sort(function (a, b) { return b.deviationPct - a.deviationPct; })[0];
+    var trough = season.slice().sort(function (a, b) { return a.deviationPct - b.deviationPct; })[0];
+
+    var prodSorted = Object.keys(byProduct).map(function (k) { return [k, byProduct[k]]; }).sort(function (a, b) { return b[1] - a[1]; });
+    var countrySorted = Object.keys(byCountry).map(function (k) { return [k, byCountry[k]]; }).sort(function (a, b) { return b[1] - a[1]; });
+
+    return {
+      total: total,
+      rowCount: rows.length,
+      dateMin: dates.length ? new Date(Math.min.apply(null, dates)) : null,
+      dateMax: dates.length ? new Date(Math.max.apply(null, dates)) : null,
+      series: series,
+      slopePerBucket: slope,
+      trendPctOfMean: trendPct,
+      topProducts: prodSorted.slice(0, 5),
+      bottomProduct: prodSorted.length ? [prodSorted[prodSorted.length - 1][0], prodSorted[prodSorted.length - 1][1]] : null,
+      byCountry: countrySorted,
+      seasonPeak: peak || null,
+      seasonTrough: trough || null,
+      meanPerBucket: meanPerBucket,
+      medianPerBucket: median(series.map(function (b) { return b.units; })),
+      growthPct: series.length >= 2 && series[0].units ? ((series[series.length - 1].units - series[0].units) / series[0].units) : null
+    };
+  }
+
+  // Compact text summary sent to the LLM (never raw CSV).
+  function buildAiPrompt(stats, aggMode) {
+    var unit = aggMode === "day" ? "day" : aggMode;
+    return [
+      "Sales data summary (aggregated by " + unit + ", filtered view):",
+      "- Date range: " + stats.dateMin.toISOString().slice(0, 10) + " to " + stats.dateMax.toISOString().slice(0, 10),
+      "- Rows: " + stats.rowCount + "; Total units sold: " + stats.total,
+      "- Top products (Article_ID: units): " + stats.topProducts.map(function (p) { return p[0] + ": " + p[1]; }).join(", "),
+      "- Bottom product: " + (stats.bottomProduct ? stats.bottomProduct[0] + ": " + stats.bottomProduct[1] : "n/a"),
+      "- Sales by country: " + stats.byCountry.map(function (c) { return c[0] + ": " + c[1]; }).join(", "),
+      "- Trend: linear regression slope " + stats.slopePerBucket.toFixed(2) + " units/" + unit + " (" + (stats.trendPctOfMean * 100).toFixed(1) + "% of mean per-bucket volume)",
+      "- Seasonality: peak month " + (stats.seasonPeak ? stats.seasonPeak.name + " (" + (stats.seasonPeak.deviationPct * 100).toFixed(1) + "% vs daily average)" : "n/a") + ", trough " + (stats.seasonTrough ? stats.seasonTrough.name + " (" + (stats.seasonTrough.deviationPct * 100).toFixed(1) + "%)" : "n/a"),
+      "- Mean per bucket: " + stats.meanPerBucket.toFixed(1) + ", median: " + stats.medianPerBucket.toFixed(1),
+      "",
+      "Provide concise, actionable insights on performance, concentration risk, and seasonality."
+    ].join("\n");
+  }
+
+  // Fallback statistical summary (no API).
+  function buildStatisticalFallback(stats) {
+    var lines = [
+      "STATISTICAL SUMMARY (no AI API configured or request failed)",
+      "- Total units: " + stats.total,
+      "- Mean per bucket: " + stats.meanPerBucket.toFixed(2),
+      "- Median per bucket: " + stats.medianPerBucket.toFixed(2),
+      "- Trend slope: " + stats.slopePerBucket.toFixed(3) + " units/bucket (" + (stats.trendPctOfMean * 100).toFixed(1) + "% of mean)",
+    ];
+    if (stats.growthPct !== null) lines.push("- First→last bucket growth: " + (stats.growthPct * 100).toFixed(1) + "%");
+    if (stats.seasonPeak) lines.push("- Peak month: " + stats.seasonPeak.name + " (" + (stats.seasonPeak.deviationPct * 100).toFixed(1) + "% vs daily avg); trough: " + stats.seasonTrough.name + " (" + (stats.seasonTrough.deviationPct * 100).toFixed(1) + "%)");
+    lines.push("- Top products: " + stats.topProducts.map(function (p) { return p[0] + " (" + p[1] + ")"; }).join(", "));
+    lines.push("- By country: " + stats.byCountry.map(function (c) { return c[0] + " (" + c[1] + ")"; }).join(", "));
+    return lines.join("\n");
+  }
+
+  var api = { normalizeHeader, parseDateValue, parseCsvData, startOfWeek, aggregate, linearRegressionSlope, median, computeStats, buildAiPrompt, buildStatisticalFallback };
+  if (typeof module !== "undefined" && module.exports) module.exports = api; // Node tests
+  window.SalesCore = api;
+})();
+</script>
+
+<script>
+/* ============================================================
+ * App — UI wiring (DOM only lives here)
+ * ============================================================ */
+(function () {
+  "use strict";
+  var Core = window.SalesCore;
+  var state = { allRows: [], products: [], countries: [], aggMode: "day", chart: null };
+  var LS_KEY = "salesAIConfig";
+
+  // ---- Settings persistence (localStorage) ----
+  function loadCfg() {
+    try { return Object.assign({ baseUrl: "", apiKey: "", model: "", temperature: 0.2, systemPrompt: "You are a senior sales analyst. Provide concise, actionable insights based on the provided data." }, JSON.parse(localStorage.getItem(LS_KEY) || "{}")); }
+    catch (e) { return {}; }
+  }
+  function saveCfg() {
+    var c = loadCfg();
+    c.baseUrl = document.getElementById("cfgBaseUrl").value.trim();
+    c.apiKey = document.getElementById("cfgApiKey").value;
+    c.model = document.getElementById("cfgModel").value.trim();
+    c.temperature = parseFloat(document.getElementById("cfgTemp").value);
+    c.systemPrompt = document.getElementById("cfgPrompt").value;
+    localStorage.setItem(LS_KEY, JSON.stringify(c));
+  }
+
+  // ---- Errors / status ----
+  function showError(msg) { var el = document.getElementById("errorBanner"); el.textContent = msg || ""; el.style.display = msg ? "block" : "none"; }
+
+  // ---- File loading ----
+  function handleFile(file) {
+    if (!file) return;
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true, dynamicTyping: false,
+      complete: function (res) {
+        // Papa with header:true gives res.data as array of objects; re-derive positional rows.
+        var fields = res.meta.fields;
+        var rowsArr = res.data.map(function (o) { return fields.map(function (f) { return o[f]; }); });
+        parsed = Core.parseCsvData(fields, rowsArr);
+        if (!parsed.rows.length && !parsed.errors.length) { showError("No valid data rows found in CSV."); return; }
+        state.allRows = parsed.rows;
+        state.products = Array.from(new Set(parsed.rows.map(function (r) { return r.articleId; }))).sort();
+        state.countries = Array.from(new Set(parsed.rows.map(function (r) { return r.countryCode; }))).sort();
+        showError(parsed.errors.join(" ")); // warnings only if rows exist
+        document.getElementById("rowCount").textContent = parsed.rows.length.toLocaleString() + " valid rows";
+        buildFilters();
+        renderAll();
+      },
+      error: function (err) { showError("Failed to parse CSV: " + err.message); }
+    });
+  }
+
+  // ---- Filters UI ----
+  function buildFilters() {
+    var pl = document.getElementById("productList");
+    pl.innerHTML = "";
+    state.products.forEach(function (p) {
+      var id = "prod_" + p;
+      pl.insertAdjacentHTML("beforeend", '<label><input type="checkbox" value="' + p + '" checked onchange="App.onFilterChange()"> ' + p + "</label>");
+    });
+    var cs = document.getElementById("countrySelect");
+    cs.innerHTML = '<option value="">All countries</option>' + state.countries.map(function (c) { return "<option>" + c + "</option>"; }).join("");
+  }
+
+  function selectedProducts() {
+    return Array.from(document.querySelectorAll("#productList input:checked")).map(function (i) { return i.value; });
+  }
+  function filteredRows() {
+    var prods = new Set(selectedProducts());
+    var country = document.getElementById("countrySelect").value;
+    return state.allRows.filter(function (r) { return prods.has(r.articleId) && (!country || r.countryCode === country); });
+  }
+
+  // ---- Rendering ----
+  function renderAll() {
+    var rows = filteredRows();
+    var stats = Core.computeStats(rows, state.aggMode);
+    renderKpis(stats);
+    renderChart(stats.series);
+    renderCountries(stats.byCountry);
+  }
+
+  function renderKpis(s) {
+    document.getElementById("kpiTotal").textContent = s.total.toLocaleString();
+    document.getElementById("kpiTop").textContent = s.topProducts.length ? s.topProducts[0][0] : "–";
+    document.getElementById("kpiTopSub").textContent = s.topProducts.length ? s.topProducts[0][1].toLocaleString() + " units" : "";
+    var bp = s.bottomProduct;
+    document.getElementById("kpiBottom").textContent = bp ? bp[0] : "–";
+    document.getElementById("kpiBottomSub").textContent = bp ? bp[1].toLocaleString() + " units" : "";
+    var unit = state.aggMode === "day" ? "day" : state.aggMode;
+    var dir = Math.abs(s.trendPctOfMean) < 0.05 ? "Flat" : (s.slopePerBucket > 0 ? "Rising" : "Falling");
+    document.getElementById("kpiTrend").textContent = dir;
+    document.getElementById("kpiTrendSub").textContent = s.slopePerBucket.toFixed(1) + " units/" + unit + " (" + (s.trendPctOfMean * 100).toFixed(1) + "% of mean)";
+    if (s.seasonPeak && Math.abs(s.seasonPeak.deviationPct) > 0.05) {
+      document.getElementById("kpiSeason").textContent = s.seasonPeak.name;
+      document.getElementById("kpiSeasonSub").textContent = "peak +" + (s.seasonPeak.deviationPct * 100).toFixed(0) + "% · trough " + s.seasonTrough.name + " (" + (s.seasonTrough.deviationPct * 100).toFixed(0) + "%)";
+    } else {
+      document.getElementById("kpiSeason").textContent = "No strong pattern";
+      document.getElementById("kpiSeasonSub").textContent = "month-of-year variation < 5% of daily average";
+    }
+  }
+
+  function renderChart(series) {
+    var ctx = document.getElementById("mainChart");
+    if (state.chart) state.chart.destroy();
+    // Thin labels for readability; keep all points.
+    var step = Math.max(1, Math.ceil(series.length / 60));
+    state.chart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: series.map(function (b) { return b.label; }),
+        datasets: [{ label: "Units sold", data: series.map(function (b) { return b.units; }), borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,.15)", fill: true, pointRadius: 0, borderWidth: 1.5, tension: .2 }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: "#94a3b8", maxTicksLimit: 12, autoSkip: true }, grid: { color: "rgba(51,65,85,.4)" }, title: { display: true, text: state.aggMode === "day" ? "Date (daily)" : "Period (" + state.aggMode + ")" } },
+          y: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "rgba(51,65,85,.4)" }, title: { display: true, text: "Units sold" } }
+        }
+      }
+    });
+  }
+
+  function renderCountries(byCountry) {
+    var el = document.getElementById("countryList");
+    if (!byCountry.length) { el.innerHTML = '<span class="muted">No data for current filters</span>'; return; }
+    var max = byCountry[0][1] || 1;
+    el.innerHTML = byCountry.map(function (c) {
+      var pct = Math.round((c[1] / max) * 100);
+      return '<div class="country-row"><span>' + c[0] + '</span><div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div><span>' + c[1].toLocaleString() + "</span></div>";
+    }).join("");
+  }
+
+  // ---- AI panel ----
+  async function analyze() {
+    var rows = filteredRows();
+    if (!rows.length) { document.getElementById("aiOutput").textContent = "No data in the current filter view — adjust filters or load a CSV."; return; }
+    var stats = Core.computeStats(rows, state.aggMode);
+    var cfg = loadCfg();
+    var out = document.getElementById("aiOutput");
+    out.classList.remove("empty");
+
+    if (!cfg.baseUrl || !cfg.model) {
+      out.textContent = Core.buildStatisticalFallback(stats);
+      return;
+    }
+    try {
+      out.textContent = "Analyzing…";
+      var res = await fetch(cfg.baseUrl.replace(/\/+$/, "") + "/chat/completions", {
+        method: "POST",
+        headers: Object.assign({ "Content-Type": "application/json" }, cfg.apiKey ? { Authorization: "Bearer " + cfg.apiKey } : {}),
+        body: JSON.stringify({
+          model: cfg.model,
+          temperature: cfg.temperature,
+          messages: [
+            { role: "system", content: cfg.systemPrompt || "You are a senior sales analyst." },
+            { role: "user", content: Core.buildAiPrompt(stats, state.aggMode) }
+          ]
+        })
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      var json = await res.json();
+      out.textContent = (json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || "(empty response)";
+    } catch (e) {
+      out.textContent = Core.buildStatisticalFallback(stats) + "\n\n[AI request failed: " + e.message + "]";
+    }
+  }
+
+  // ---- Wiring ----
+  window.App = {
+    onFilterChange: function () { renderAll(); },
+    handleFile: handleFile,
+    resetFilters: function () {
+      document.querySelectorAll("#productList input").forEach(function (i) { i.checked = true; });
+      document.getElementById("countrySelect").value = "";
+      document.querySelector('input[name="agg"][value="day"]').checked = true;
+      state.aggMode = "day";
+      renderAll();
+    }
+  };
+
+  var fileInput = document.getElementById("fileInput");
+  var dropZone = document.getElementById("dropZone");
+  fileInput.addEventListener("change", function () { handleFile(fileInput.files[0]); });
+  ["dragenter", "dragover"].forEach(function (ev) { dropZone.addEventListener(ev, function (e) { e.preventDefault(); dropZone.classList.add("dragover"); }); });
+  ["dragleave", "drop"].forEach(function (ev) { dropZone.addEventListener(ev, function (e) { e.preventDefault(); dropZone.classList.remove("dragover"); }); });
+  dropZone.addEventListener("drop", function (e) { if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]); });
+
+  document.getElementById("countrySelect").addEventListener("change", renderAll);
+  document.querySelectorAll('input[name="agg"]').forEach(function (r) { r.addEventListener("change", function () { state.aggMode = this.value; renderAll(); }); });
+  document.getElementById("resetBtn").addEventListener("click", App.resetFilters);
+
+  var cfg = loadCfg();
+  document.getElementById("cfgBaseUrl").value = cfg.baseUrl || "";
+  document.getElementById("cfgApiKey").value = cfg.apiKey || "";
+  document.getElementById("cfgModel").value = cfg.model || "";
+  document.getElementById("cfgTemp").value = cfg.temperature != null ? cfg.temperature : 0.2;
+  document.getElementById("tempVal").textContent = cfg.temperature != null ? cfg.temperature : 0.2;
+  document.getElementById("cfgPrompt").value = cfg.systemPrompt || "You are a senior sales analyst. Provide concise, actionable insights based on the provided data.";
+  ["cfgBaseUrl", "cfgApiKey", "cfgModel"].forEach(function (id) { document.getElementById(id).addEventListener("change", saveCfg); });
+  var tempEl = document.getElementById("cfgTemp");
+  tempEl.addEventListener("input", function () { document.getElementById("tempVal").textContent = this.value; });
+  tempEl.addEventListener("change", saveCfg);
+  document.getElementById("cfgPrompt").addEventListener("change", saveCfg);
+
+  document.getElementById("toggleSettingsBtn").addEventListener("click", function () {
+    var el = document.getElementById("aiSettings");
+    el.style.display = el.style.display === "none" ? "block" : "none";
+  });
+  document.getElementById("analyzeBtn").addEventListener("click", analyze);
+  document.getElementById("copyBtn").addEventListener("click", function () {
+    navigator.clipboard.writeText(document.getElementById("aiOutput").textContent).then(function () {
+      var b = document.getElementById("copyBtn"); b.textContent = "Copied!"; setTimeout(function () { b.textContent = "Copy to clipboard"; }, 1500);
+    });
+  });
+
+  // Show copy button whenever output is non-empty.
+  new MutationObserver(function () {
+    var o = document.getElementById("aiOutput");
+    document.getElementById("copyBtn").style.display = o.classList.contains("empty") ? "none" : "block";
+  }).observe(document.getElementById("aiOutput"), { childList: true, characterData: true });
+})();
+</script>
+</body>
+</html>
