@@ -1,11 +1,11 @@
 # CONTEXT — Current Task
 
-## Status: COMPLETE (product delivered & pushed; file:// load bug fixed)
+## Status: COMPLETE — v2 shipped & verified in real Chrome over file://
 **Repo:** https://github.com/joenobk/sales-analytics-tool (branch `main`)
-**Run it:** open `index.html` directly in a browser, or `npx serve .` and visit the URL. No build step, no network needed — PapaParse + Chart.js are inlined.
+**Run it:** open `index.html` directly in a browser, or `npx serve .`. No build step, no network needed. Header shows **"v2 (self-contained)"** — if your copy doesn't show that tag, you have the old file; re-download/hard-refresh.
 
 ## Next steps (in order, for future sessions)
-1. Browser smoke test: load `Historical_Data.csv` via the UI, exercise filters/aggregation/AI panel against at least 3 OpenAI-compatible providers (PRD success metric).
+1. User-side confirmation: open v2 in their browser and load `Historical_Data.csv` (should show "4,849 valid rows" + KPIs). Then exercise filters/aggregation/AI panel against at least 3 OpenAI-compatible providers (PRD success metric).
 2. Optional polish from PRD §4: multi-select product filter already exists; consider date-range filter and CSV export of filtered view.
 3. If requested: add a README.md pointing to the repo + run instructions.
 
