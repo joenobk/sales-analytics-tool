@@ -2,6 +2,8 @@
 
 Execution model: one chunk per session (or per work block). Each chunk has a goal, deliverable, and exit check. Do not start the next chunk until the previous exit check passes. If a chunk fails its exit check twice, stop and re-plan (see loop-trap rules in `.instructions.md`).
 
+**Repo:** https://github.com/joenobk/sales-analytics-tool (branch `main`)
+
 ## Chunk 0 — Scaffolding ✅
 - **Goal:** Establish project files per `AI_Workspace_Architecture_Guide_v5.md` + loop-trap guardrails.
 - **Deliverables:** PRD.md, .instructions.md, DEVLOG.md, CONTEXT.md, .env (+ .gitignore), this PLAN.md.
