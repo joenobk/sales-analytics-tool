@@ -1,8 +1,8 @@
 # CONTEXT — Current Task
 
-## Status: COMPLETE (product delivered & pushed)
+## Status: COMPLETE (product delivered & pushed; file:// load bug fixed)
 **Repo:** https://github.com/joenobk/sales-analytics-tool (branch `main`)
-**Run it:** open `index.html` directly in a browser, or `npx serve .` and visit the URL. No build step.
+**Run it:** open `index.html` directly in a browser, or `npx serve .` and visit the URL. No build step, no network needed — PapaParse + Chart.js are inlined.
 
 ## Next steps (in order, for future sessions)
 1. Browser smoke test: load `Historical_Data.csv` via the UI, exercise filters/aggregation/AI panel against at least 3 OpenAI-compatible providers (PRD success metric).
