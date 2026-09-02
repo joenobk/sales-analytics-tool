@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpolygon points='32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1' fill='%23f97316'/%3E%3C/svg%3E">
 <title>Sales Data Analytics Tool</title>
 <script>
 /* PapaParse 5.4.1 (inlined so the file works offline / from file://) */
@@ -47,6 +48,8 @@ License: MIT
   body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
   header.topbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
   header.topbar h1 { font-size: 1.15rem; font-weight: 600; }
+  .mini-btns { float: right; display: inline-flex; gap: 4px; }
+  .mini-btns button { padding: 2px 8px; font-size: .72rem; border-radius: 4px; }
   .dropzone { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border: 2px dashed var(--border); border-radius: 8px; cursor: pointer; color: var(--muted); font-size: .9rem; transition: all .15s; }
   .dropzone:hover, .dropzone.dragover { border-color: var(--accent); color: var(--accent); background: rgba(56,189,248,.08); }
   .dropzone.loaded { border-style: solid; border-color: var(--good); color: var(--good); }
@@ -90,7 +93,8 @@ License: MIT
 <body>
 
 <header class="topbar">
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v2 (self-contained)</span></h1>
+  <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v3 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
     <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
     <span id="dropLabel">Choose CSV (or drag &amp; drop)</span>
@@ -104,12 +108,14 @@ License: MIT
 <div class="layout">
   <aside class="sidebar">
     <div class="filter-group">
-      <h3>Products (Article ID)</h3>
+      <h3>Products (Article ID)
+        <span class="mini-btns"><button type="button" id="prodAllBtn" title="Select all products">All</button><button type="button" id="prodNoneBtn" title="Deselect all products">None</button></span>
+      </h3>
       <div class="checklist" id="productList"><span class="muted">Load a CSV first</span></div>
     </div>
     <div class="filter-group">
-      <h3>Country</h3>
-      <select id="countrySelect"><option value="">All countries</option></select>
+      <h3>Countries (multi-select)</h3>
+      <div class="checklist" id="countryChecklist"><span class="muted">Load a CSV first</span></div>
     </div>
     <div class="filter-group">
       <h3>Aggregation</h3>
@@ -117,6 +123,15 @@ License: MIT
         <label><input type="radio" name="agg" value="day" checked> Day</label>
         <label><input type="radio" name="agg" value="week"> Week</label>
         <label><input type="radio" name="agg" value="month"> Month</label>
+      </div>
+    </div>
+    <div class="filter-group">
+      <h3>Trendline overlay</h3>
+      <div class="checklist" id="trendRow">
+        <label><input type="checkbox" id="optRegression"> Regression line (linear fit)</label>
+        <label><input type="checkbox" id="optMovingAvg"> Moving average window:
+          <select id="maWindow" style="width:auto;padding:2px 6px"><option>5</option><option selected>10</option><option>20</option></select> periods
+        </label>
       </div>
     </div>
   </aside>
@@ -156,8 +171,11 @@ License: MIT
           <textarea id="cfgPrompt">You are a senior sales analyst. Provide concise, actionable insights based on the provided data.</textarea>
         </div>
       </div>
+      <div class="field" style="margin-bottom:10px"><label>Your question (optional — sent with the data summary)</label>
+        <textarea id="aiQuestion" placeholder="e.g. Why did sales dip in Q3? Which products should we focus on next quarter?" style="min-height:48px"></textarea>
+      </div>
       <button class="primary" id="analyzeBtn">Analyze</button>
-      <span class="muted" style="margin-left:8px">Sends a compact summary of the filtered view to your configured API. Falls back to statistics when unconfigured.</span>
+      <span class="muted" style="margin-left:8px">Sends a compact summary of the filtered view (plus your question) to your configured API. Falls back to statistics when unconfigured.</span>
       <div id="aiOutput" class="empty">No analysis yet — load data and click Analyze.</div>
       <button id="copyBtn" style="margin-top:10px;display:none">Copy to clipboard</button>
     </section>
@@ -262,6 +280,30 @@ License: MIT
     return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
   }
 
+  // Least-squares line through the series values -> [yAtFirst, yAtLast].
+  function linearTrendLine(values) {
+    var n = values.length;
+    if (n < 2) return null;
+    var sx = 0, sy = 0, sxy = 0, sxx = 0;
+    for (var i = 0; i < n; i++) { sx += i; sy += values[i]; sxy += i * values[i]; sxx += i * i; }
+    var denom = n * sxx - sx * sx || 1;
+    var slope = (n * sxy - sx * sy) / denom;
+    var intercept = (sy - slope * sx) / n;
+    return [intercept, intercept + slope * (n - 1)];
+  }
+
+  // Centered moving average -> array of same length with nulls at the edges.
+  function movingAverage(values, windowSize) {
+    var w = Math.max(2, Math.floor(windowSize));
+    return values.map(function (_, i) {
+      var half = Math.floor(w / 2);
+      if (i - half < 0 || i + half >= values.length) return null;
+      var sum = 0;
+      for (var j = i - half; j <= i + half; j++) sum += values[j];
+      return sum / w;
+    });
+  }
+
   // Full stats for the filtered rows.
   function computeStats(rows, aggMode) {
     var total = 0, byProduct = {}, byCountry = {};
@@ -349,7 +391,7 @@ License: MIT
     return lines.join("\n");
   }
 
-  var api = { normalizeHeader, parseDateValue, parseCsvData, startOfWeek, aggregate, linearRegressionSlope, median, computeStats, buildAiPrompt, buildStatisticalFallback };
+  var api = { normalizeHeader, parseDateValue, parseCsvData, startOfWeek, aggregate, linearRegressionSlope, median, linearTrendLine, movingAverage, computeStats, buildAiPrompt, buildStatisticalFallback };
   if (typeof module !== "undefined" && module.exports) module.exports = api; // Node tests
   window.SalesCore = api;
 })();
@@ -416,17 +458,23 @@ License: MIT
       var id = "prod_" + p;
       pl.insertAdjacentHTML("beforeend", '<label><input type="checkbox" value="' + p + '" checked onchange="App.onFilterChange()"> ' + p + "</label>");
     });
-    var cs = document.getElementById("countrySelect");
-    cs.innerHTML = '<option value="">All countries</option>' + state.countries.map(function (c) { return "<option>" + c + "</option>"; }).join("");
+    var cl = document.getElementById("countryChecklist");
+    cl.innerHTML = "";
+    state.countries.forEach(function (c) {
+      cl.insertAdjacentHTML("beforeend", '<label><input type="checkbox" value="' + c + '" checked onchange="App.onFilterChange()"> ' + c + "</label>");
+    });
   }
 
   function selectedProducts() {
     return Array.from(document.querySelectorAll("#productList input:checked")).map(function (i) { return i.value; });
   }
+  function selectedCountries() {
+    return Array.from(document.querySelectorAll("#countryChecklist input:checked")).map(function (i) { return i.value; });
+  }
   function filteredRows() {
     var prods = new Set(selectedProducts());
-    var country = document.getElementById("countrySelect").value;
-    return state.allRows.filter(function (r) { return prods.has(r.articleId) && (!country || r.countryCode === country); });
+    var countries = new Set(selectedCountries());
+    return state.allRows.filter(function (r) { return prods.has(r.articleId) && countries.has(r.countryCode); });
   }
 
   // ---- Rendering ----
@@ -463,15 +511,25 @@ License: MIT
     if (state.chart) state.chart.destroy();
     // Thin labels for readability; keep all points.
     var step = Math.max(1, Math.ceil(series.length / 60));
+    var values = series.map(function (b) { return b.units; });
+    var datasets = [{ label: "Units sold", data: values, borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,.15)", fill: true, pointRadius: 0, borderWidth: 1.5, tension: .2 }];
+    if (document.getElementById("optRegression").checked) {
+      var tl = Core.linearTrendLine(values);
+      if (tl) datasets.push({ label: "Regression line", data: [tl[0], tl[1]], borderColor: "#f87171", pointRadius: 3, borderWidth: 2, borderDash: [6, 4], fill: false });
+    }
+    var maWin = parseInt(document.getElementById("maWindow").value, 10);
+    if (document.getElementById("optMovingAvg").checked) {
+      datasets.push({ label: "Moving average (" + maWin + ")", data: Core.movingAverage(values, maWin), borderColor: "#fbbf24", pointRadius: 0, borderWidth: 2, tension: .3, fill: false });
+    }
     state.chart = new Chart(ctx, {
       type: "line",
       data: {
         labels: series.map(function (b) { return b.label; }),
-        datasets: [{ label: "Units sold", data: series.map(function (b) { return b.units; }), borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,.15)", fill: true, pointRadius: 0, borderWidth: 1.5, tension: .2 }]
+        datasets: datasets
       },
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
-        plugins: { legend: { display: false } },
+        plugins: { legend: { display: datasets.length > 1, labels: { color: "#94a3b8" } } },
         scales: {
           x: { ticks: { color: "#94a3b8", maxTicksLimit: 12, autoSkip: true }, grid: { color: "rgba(51,65,85,.4)" }, title: { display: true, text: state.aggMode === "day" ? "Date (daily)" : "Period (" + state.aggMode + ")" } },
           y: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "rgba(51,65,85,.4)" }, title: { display: true, text: "Units sold" } }
@@ -499,8 +557,10 @@ License: MIT
     var out = document.getElementById("aiOutput");
     out.classList.remove("empty");
 
+    var question = document.getElementById("aiQuestion").value.trim();
+
     if (!cfg.baseUrl || !cfg.model) {
-      out.textContent = Core.buildStatisticalFallback(stats);
+      out.textContent = Core.buildStatisticalFallback(stats) + (question ? "\n\n[Your question: " + question + "] — configure an API in Settings to get a written answer." : "");
       return;
     }
     try {
@@ -531,7 +591,7 @@ License: MIT
     handleFile: handleFile,
     resetFilters: function () {
       document.querySelectorAll("#productList input").forEach(function (i) { i.checked = true; });
-      document.getElementById("countrySelect").value = "";
+      document.querySelectorAll("#countryChecklist input").forEach(function (i) { i.checked = true; });
       document.querySelector('input[name="agg"][value="day"]').checked = true;
       state.aggMode = "day";
       renderAll();
@@ -549,8 +609,17 @@ License: MIT
     if (e.dataTransfer && e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
   });
 
-  document.getElementById("countrySelect").addEventListener("change", renderAll);
   document.querySelectorAll('input[name="agg"]').forEach(function (r) { r.addEventListener("change", function () { state.aggMode = this.value; renderAll(); }); });
+  document.getElementById("prodAllBtn").addEventListener("click", function () {
+    document.querySelectorAll("#productList input").forEach(function (i) { i.checked = true; });
+    renderAll();
+  });
+  document.getElementById("prodNoneBtn").addEventListener("click", function () {
+    document.querySelectorAll("#productList input").forEach(function (i) { i.checked = false; });
+    renderAll();
+  });
+  ["optRegression", "optMovingAvg"].forEach(function (id) { document.getElementById(id).addEventListener("change", renderAll); });
+  document.getElementById("maWindow").addEventListener("change", function () { renderAll(); });
   document.getElementById("resetBtn").addEventListener("click", App.resetFilters);
 
   var cfg = loadCfg();
