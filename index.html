@@ -94,6 +94,11 @@ License: MIT
   textarea { resize: vertical; min-height: 60px; }
   .ai-history { max-height: 480px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 6px; margin-top: 12px; }
   .ai-entry { background: var(--panel2); border-radius: 8px; padding: 12px; font-size: .85rem; line-height: 1.5; color: var(--text); }
+  .ai-status { display: flex; align-items: center; gap: 10px; }
+  .spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; flex-shrink: 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ai-status .phase { color: var(--text); font-weight: 600; }
+  .ai-status .elapsed { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .ai-entry.empty-note { color: var(--muted); font-style: italic; }
   .ai-q { font-weight: 600; margin-bottom: 8px; white-space: pre-wrap; border-left: 3px solid var(--accent); padding-left: 8px; }
   .ai-a { white-space: normal; }
@@ -122,7 +127,7 @@ License: MIT
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v5 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
     <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
     <span id="dropLabel">Choose CSV (or drag &amp; drop)</span>
@@ -680,20 +685,40 @@ License: MIT
     var hist = aiHistoryEl();
     var pending = document.createElement("div");
     pending.className = "ai-entry";
-    pending.textContent = "Analyzing…";
+    // Status line: spinner + phase label + live elapsed timer. The timer is the key
+    // "still working" signal, since a non-streaming request gives no finer status —
+    // for local models most of this time is model warm-up (15s+) then processing.
+    pending.innerHTML = '<div class="ai-status"><div class="spinner"></div><span class="phase">Preparing…</span><span class="elapsed"></span></div>' +
+      '<div class="muted" style="margin-top:6px;font-size:.78rem">Data sent to the model. Local models can take 15s+ to warm up, then longer for larger data — this is normal.</div>';
     hist.insertBefore(pending, hist.firstChild);
+    var phaseEl = pending.querySelector(".phase");
+    var elapsedEl = pending.querySelector(".elapsed");
+    var t0 = Date.now();
+    var timer = setInterval(function () {
+      var s = Math.floor((Date.now() - t0) / 1000);
+      elapsedEl.textContent = "· " + (s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60) + "s");
+    }, 500);
+
+    var btn = document.getElementById("analyzeBtn");
+    btn.disabled = true;
+    btn.textContent = "Analyzing…";
 
     try {
+      var bodyStr = JSON.stringify({
+        model: cfg.model,
+        temperature: cfg.temperature,
+        messages: [{ role: "system", content: cfg.systemPrompt || "You are a senior sales analyst." }].concat(aiCtx.messages)
+      });
+      // The single await below covers send + model warm-up + processing (a non-streaming
+      // request returns headers only when done), so label it as the whole in-flight phase.
+      phaseEl.textContent = "Analyzing… (" + Math.round(bodyStr.length / 1024) + " KB sent to model)";
       var res = await fetch(cfg.baseUrl.replace(/\/+$/, "") + "/chat/completions", {
         method: "POST",
         headers: Object.assign({ "Content-Type": "application/json" }, cfg.apiKey ? { Authorization: "Bearer " + cfg.apiKey } : {}),
-        body: JSON.stringify({
-          model: cfg.model,
-          temperature: cfg.temperature,
-          messages: [{ role: "system", content: cfg.systemPrompt || "You are a senior sales analyst." }].concat(aiCtx.messages)
-        })
+        body: bodyStr
       });
       if (!res.ok) throw new Error("HTTP " + res.status);
+      phaseEl.textContent = "Receiving response…";
       var json = await res.json();
       var answer = (json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || "(empty response)";
       aiCtx.messages.push({ role: "assistant", content: answer });
@@ -701,7 +726,11 @@ License: MIT
       addAiEntry(question, answer, false);
     } catch (e) {
       pending.remove();
-      addAiEntry(question, Core.buildStatisticalFallback(stats) + "\n\n[AI request failed: " + e.message + "]", true);
+      addAiEntry(question, Core.buildStatisticalFallback(stats) + "\n\n[AI request failed after " + Math.floor((Date.now() - t0) / 1000) + "s: " + e.message + "]", true);
+    } finally {
+      clearInterval(timer);
+      btn.disabled = false;
+      btn.textContent = "Analyze";
     }
   }
 
