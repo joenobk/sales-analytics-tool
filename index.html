@@ -515,7 +515,7 @@ License: MIT
     var datasets = [{ label: "Units sold", data: values, borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,.15)", fill: true, pointRadius: 0, borderWidth: 1.5, tension: .2 }];
     if (document.getElementById("optRegression").checked) {
       var tl = Core.linearTrendLine(values);
-      if (tl) datasets.push({ label: "Regression line", data: [tl[0], tl[1]], borderColor: "#f87171", pointRadius: 3, borderWidth: 2, borderDash: [6, 4], fill: false });
+      if (tl) datasets.push({ label: "Regression line", data: values.map(function (_, i) { return tl[0] + (tl[1] - tl[0]) * (values.length > 1 ? i / (values.length - 1) : 0); }), borderColor: "#f87171", pointRadius: 0, borderWidth: 2, borderDash: [6, 4], fill: false });
     }
     var maWin = parseInt(document.getElementById("maWindow").value, 10);
     if (document.getElementById("optMovingAvg").checked) {

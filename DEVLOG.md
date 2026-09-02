@@ -29,3 +29,7 @@
 - **Verification:** Extended the real-Chrome puppeteer e2e test with checks for every new feature — ALL PASSED: 4,849 rows; KPI total 9,537; favicon link + header star present; v3 tag shown; 4 country checkboxes (AT-only filter → 1,330); deselect-all → 0 / select-all → 9,537; chart has 3 datasets with both overlays on; AI fallback echoes the typed question; zero console errors. Headless .verify-core.js and .verify-inline.js still pass.
 - **Errors found & fixed:** none — all features verified first run in real Chrome.
 - **Loop traps hit:** 0.
+
+## 2026-09-02 — Session 4b: Regression trendline fix (user-reported)
+- **Did:** User screenshot showed the regression "line" rendered as a single steep segment pinned to the left edge instead of spanning the chart. Root cause: Chart.js connects dataset points in order, so a 2-point dataset ([yFirst, yLast]) drew one line from bucket 0 to bucket 1 only — not across all buckets. Fix: emit one point per bucket (interpolated along the least-squares fit) so the dashed red regression line spans the full x-axis; also removed its endpoint dots for a cleaner look.
+- **Verification:** Extended e2e now asserts the regression dataset has exactly one point per bucket (772 daily buckets in this data). ALL REAL-BROWSER CHECKS PASSED, zero console errors.
