@@ -122,7 +122,7 @@ License: MIT
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v4 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v5 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
     <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
     <span id="dropLabel">Choose CSV (or drag &amp; drop)</span>
@@ -196,7 +196,7 @@ License: MIT
           <div class="field"><label>Temperature: <span id="tempVal">0.2</span></label><input type="range" id="cfgTemp" min="0" max="1" step="0.1" value="0.2"></div>
         </div>
         <div class="field" style="margin-bottom:12px"><label>System prompt</label>
-          <textarea id="cfgPrompt">You are a senior sales analyst. Provide concise, actionable insights based on the provided data.</textarea>
+          <textarea id="cfgPrompt">You are a senior sales analyst. You are given the COMPLETE filtered dataset at monthly grain (month x product x country; any combination not listed had zero units). Answer questions about specific products, countries, months, and trends directly from this data — do NOT say you only have aggregate totals or that you need more granular data.</textarea>
         </div>
       </div>
       <div class="field" style="margin-bottom:10px"><label>Your question (optional — sent with the data summary)</label>
@@ -424,7 +424,39 @@ License: MIT
     return lines.join("\n");
   }
 
-  var api = { normalizeHeader, parseDateValue, parseCsvData, startOfWeek, aggregate, linearRegressionSlope, median, linearTrendLine, movingAverage, computeStats, buildAiPrompt, buildStatisticalFallback };
+  // Full filtered dataset at month x product x country grain (nonzero cells only).
+  // Gives the LLM complete visibility so it can derive any cut (per-product monthly,
+  // per-country monthly, mix shifts, etc.) without us re-sending data.
+  function buildFullDataPayload(rows) {
+    if (!rows.length) return "";
+    var cube = {};            // "ym|prod|ctry" -> units
+    var totalByProd = {}, totalByCtry = {}, grandTotal = 0;
+    rows.forEach(function (r) {
+      var ym = r.date.getFullYear() + "-" + String(r.date.getMonth() + 1).padStart(2, "0");
+      var k = ym + "|" + r.articleId + "|" + r.countryCode;
+      cube[k] = (cube[k] || 0) + r.units;
+      totalByProd[r.articleId] = (totalByProd[r.articleId] || 0) + r.units;
+      totalByCtry[r.countryCode] = (totalByCtry[r.countryCode] || 0) + r.units;
+      grandTotal += r.units;
+    });
+    function prodCmp(a, b) { var an = parseInt(a, 10), bn = parseInt(b, 10); if (!isNaN(an) && !isNaN(bn)) return an - bn; return a < b ? -1 : a > b ? 1 : 0; }
+    var cells = Object.keys(cube).map(function (k) { var p = k.split("|"); return { ym: p[0], prod: p[1], ctry: p[2], units: cube[k] }; });
+    cells.sort(function (a, b) { return a.ym < b.ym ? -1 : a.ym > b.ym ? 1 : (prodCmp(a.prod, b.prod) || (a.ctry < b.ctry ? -1 : a.ctry > b.ctry ? 1 : 0)); });
+
+    var lines = [];
+    lines.push("FULL DATA — the complete filtered dataset at monthly grain (month x product x country). Only cells with units > 0 are listed; any month/product/country combination not shown had zero units that month. Use this to answer questions about specific products, countries, months, or trends.");
+    lines.push("");
+    lines.push("Total units in view: " + grandTotal);
+    lines.push("Products (" + Object.keys(totalByProd).length + "): " + Object.keys(totalByProd).sort(prodCmp).map(function (p) { return p + "=" + totalByProd[p]; }).join(", "));
+    lines.push("Countries (" + Object.keys(totalByCtry).length + "): " + Object.keys(totalByCtry).sort().map(function (c) { return c + "=" + totalByCtry[c]; }).join(", "));
+    lines.push("");
+    lines.push("| Month | Product | Country | Units |");
+    lines.push("|---|---|---|---|");
+    cells.forEach(function (c) { lines.push("| " + c.ym + " | " + c.prod + " | " + c.ctry + " | " + c.units + " |"); });
+    return lines.join("\n");
+  }
+
+  var api = { normalizeHeader, parseDateValue, parseCsvData, startOfWeek, aggregate, linearRegressionSlope, median, linearTrendLine, movingAverage, computeStats, buildAiPrompt, buildFullDataPayload, buildStatisticalFallback };
   if (typeof module !== "undefined" && module.exports) module.exports = api; // Node tests
   window.SalesCore = api;
 })();
@@ -442,7 +474,7 @@ License: MIT
 
   // ---- Settings persistence (localStorage) ----
   function loadCfg() {
-    try { return Object.assign({ baseUrl: "", apiKey: "", model: "", temperature: 0.2, systemPrompt: "You are a senior sales analyst. Provide concise, actionable insights based on the provided data." }, JSON.parse(localStorage.getItem(LS_KEY) || "{}")); }
+    try { return Object.assign({ baseUrl: "", apiKey: "", model: "", temperature: 0.2, systemPrompt: "You are a senior sales analyst. You are given the COMPLETE filtered dataset at monthly grain (month x product x country; any combination not listed had zero units). Answer questions about specific products, countries, months, and trends directly from this data — do NOT say you only have aggregate totals or that you need more granular data." }, JSON.parse(localStorage.getItem(LS_KEY) || "{}")); }
     catch (e) { return {}; }
   }
   function saveCfg() {
@@ -637,10 +669,11 @@ License: MIT
     }
 
     // Conversation caching: if the filtered view is unchanged since the last analysis,
-    // follow-up questions are sent WITHOUT re-sending the data summary.
+    // follow-up questions are sent WITHOUT re-sending the data payload.
     var key = filterKey();
     if (!aiCtx || aiCtx.key !== key) {
-      aiCtx = { key: key, messages: [{ role: "user", content: Core.buildAiPrompt(stats, state.aggMode) }] };
+      // Full visibility: send aggregate summary + complete month x product x country dataset.
+      aiCtx = { key: key, messages: [{ role: "user", content: Core.buildAiPrompt(stats, state.aggMode) + "\n\n" + Core.buildFullDataPayload(rows) }] };
     }
     aiCtx.messages.push({ role: "user", content: question ? question : "Provide your analysis of this data." });
 
