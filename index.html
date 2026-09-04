@@ -82,7 +82,13 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   :root {
     --bg: #0f172a; --panel: #1e293b; --panel2: #26334a; --text: #e2e8f0;
     --muted: #94a3b8; --accent: #38bdf8; --good: #34d399; --bad: #f87171; --border: #334155;
-  }
+      --code-bg: rgba(51,65,85,.6); --pre-bg: rgba(15,23,42,.7); --row-alt: rgba(38,51,74,.5);
+    }
+    html.light {
+      --bg: #f1f5f9; --panel: #ffffff; --panel2: #e2e8f0; --text: #0f172a;
+      --muted: #64748b; --accent: #0284c7; --good: #059669; --bad: #dc2626; --border: #cbd5e1;
+      --code-bg: rgba(100,116,139,.18); --pre-bg: rgba(15,23,42,.06); --row-alt: rgba(15,23,42,.04);
+    }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
   header.topbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
@@ -136,8 +142,8 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   .md h1, .md h2, .md h3, .md h4 { font-size: .95rem; margin: 12px 0 6px; }
   .md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
   .md li { margin-bottom: 3px; }
-  .md code { background: rgba(51,65,85,.6); border-radius: 4px; padding: 1px 5px; font-size: .8rem; }
-  .md pre { background: rgba(15,23,42,.7); border-radius: 6px; padding: 10px; overflow-x: auto; margin-bottom: 10px; }
+  .md code { background: var(--code-bg); border-radius: 4px; padding: 1px 5px; font-size: .8rem; }
+    .md pre { background: var(--pre-bg); border-radius: 6px; padding: 10px; overflow-x: auto; margin-bottom: 10px; }
   .md pre code { background: none; padding: 0; }
   .md blockquote { border-left: 3px solid var(--border); padding-left: 10px; color: var(--muted); margin: 0 0 10px; }
   .md a { color: var(--accent); }
@@ -145,13 +151,13 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   .md table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: .8rem; }
   .md th, .md td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; white-space: nowrap; }
   .md thead th { background: rgba(56,189,248,.12); position: sticky; top: 0; }
-  .md tbody tr:nth-child(even) { background: rgba(38,51,74,.5); }
+  .md tbody tr:nth-child(even) { background: var(--row-alt); }
   .error-banner { background: rgba(248,113,113,.12); border: 1px solid var(--bad); color: var(--bad); border-radius: 8px; padding: 10px 14px; font-size: .9rem; display: none; }
   .muted { color: var(--muted); font-size: .85rem; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } aside.sidebar { position: static; } }
     .ds-tabs { max-width: 1200px; margin: 14px auto 0; padding: 0 16px; display: flex; flex-wrap: wrap; gap: 6px; }
-    .ds-tabs button { padding: 5px 12px; border: 1px solid #334155; border-radius: 6px 6px 0 0; background: transparent; color: #94a3b8; cursor: pointer; font-size: .82rem; }
+    .ds-tabs button { padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); cursor: pointer; font-size: .82rem; }
     .ds-tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
     .ds-tabs button.ghost { opacity: .55; }
     #overviewPanel { margin: 16px 0; display: none; }
@@ -163,14 +169,15 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.05 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.06 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
   </label>
   <button id="resetBtn" title="Reset all filters">Reset filters</button>
-  <span class="muted" id="rowCount"></span>
-</header>
+    <button id="themeBtn" type="button" title="Toggle light / dark theme">☾</button>
+    <span class="muted" id="rowCount"></span>
+  </header>
 
   <div class="ds-tabs" id="dsTabs"></div>
 
@@ -194,12 +201,15 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       <h3>Products (Article ID)
         <span class="mini-btns"><button type="button" id="prodAllBtn" title="Select all products">All</button><button type="button" id="prodNoneBtn" title="Deselect all products">None</button></span>
       </h3>
-      <div class="checklist" id="productList"><span class="muted">Load a CSV first</span></div>
-    </div>
-    <div class="filter-group">
-      <h3>Countries (multi-select)</h3>
-      <div class="checklist" id="countryChecklist"><span class="muted">Load a CSV first</span></div>
-    </div>
+          <input type="text" id="productSearch" placeholder="Search products…" autocomplete="off" style="margin-bottom:6px">
+          <div class="checklist" id="productList"><span class="muted">Load a CSV first</span></div>
+        </div>
+        <div class="filter-group">
+          <h3>Countries (multi-select)
+            <span class="mini-btns"><button type="button" id="ctryAllBtn" title="Select all countries">All</button><button type="button" id="ctryNoneBtn" title="Deselect all countries">None</button></span>
+          </h3>
+          <div class="checklist" id="countryChecklist"><span class="muted">Load a CSV first</span></div>
+        </div>
     <div class="filter-group">
       <h3>Date range</h3>
       <div style="display:flex;flex-direction:column;gap:6px;font-size:.85rem">
@@ -2055,36 +2065,44 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   document.getElementById("mapAiAssistBtn").addEventListener("click", aiAssistMapping);
 
   // ---- Filters UI (nodes built with textContent; events via addEventListener — no inline handlers) ----
-  function buildFilters() {
-    var pl = document.getElementById("productList");
-    pl.innerHTML = "";
-    store.get("products").forEach(function (p) {
-      var label = document.createElement("label");
-      var cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.value = p;
-      cb.checked = true;
-      cb.dataset.kind = "product";
-      cb.addEventListener("change", onFilterChange);
-      label.appendChild(cb);
-      label.appendChild(document.createTextNode(" " + p));
-      pl.appendChild(label);
-    });
-    var cl = document.getElementById("countryChecklist");
-    cl.innerHTML = "";
-    store.get("countries").forEach(function (c) {
-      var label = document.createElement("label");
-      var cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.value = c;
-      cb.checked = true;
-      cb.dataset.kind = "country";
-      cb.addEventListener("change", onFilterChange);
-      label.appendChild(cb);
-      label.appendChild(document.createTextNode(" " + c));
-      cl.appendChild(label);
-    });
-  }
+  function applyProductSearch() { // filter the checkbox list to whatever matches the search box
+      var q = (document.getElementById("productSearch").value || "").trim().toLowerCase();
+      document.querySelectorAll("#productList label").forEach(function (l) {
+        l.style.display = (l.textContent || "").toLowerCase().indexOf(q) >= 0 ? "" : "none";
+      });
+    }
+
+    function buildFilters() {
+      var pl = document.getElementById("productList");
+      pl.innerHTML = "";
+      store.get("products").forEach(function (p) {
+        var label = document.createElement("label");
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = p;
+        cb.checked = true;
+        cb.dataset.kind = "product";
+        cb.addEventListener("change", onFilterChange);
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(" " + p));
+        pl.appendChild(label);
+      });
+      applyProductSearch();
+      var cl = document.getElementById("countryChecklist");
+      cl.innerHTML = "";
+      store.get("countries").forEach(function (c) {
+        var label = document.createElement("label");
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = c;
+        cb.checked = true;
+        cb.dataset.kind = "country";
+        cb.addEventListener("change", onFilterChange);
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(" " + c));
+        cl.appendChild(label);
+      });
+    }
 
   function syncChecklistState() { // mirror checkbox state into the store (single source of truth)
     var prods = [], ctrys = [];
@@ -2167,28 +2185,41 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     }
   }
 
-  function renderChart(series) {
-    var ctx = document.getElementById("mainChart");
-    if (state.chart) state.chart.destroy();
-    // Chart spec built by the Charts module from pure inputs (no DOM reads inside).
-    var spec = Core.Charts.buildLineSpec(series, {
-      regression: document.getElementById("optRegression").checked,
-      movingAvg: document.getElementById("optMovingAvg").checked,
-      maWindow: parseInt(document.getElementById("maWindow").value, 10)
-    });
-    state.chart = new Chart(ctx, {
-      type: "line",
-      data: spec,
-      options: {
-        responsive: true, maintainAspectRatio: false, animation: false,
-        plugins: { legend: { display: spec.datasets.length > 1, labels: { color: "#94a3b8" } } },
-        scales: {
-          x: { ticks: { color: "#94a3b8", maxTicksLimit: 12, autoSkip: true }, grid: { color: "rgba(51,65,85,.4)" }, title: { display: true, text: store.get("aggMode") === "day" ? "Date (daily)" : "Period (" + store.get("aggMode") + ")" } },
-          y: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "rgba(51,65,85,.4)" }, title: { display: true, text: "Units sold" } }
-        }
+  // Chart colors follow the active theme (CSS variables) so light/dark both look right.
+    function chartTheme() {
+      var cs = getComputedStyle(document.documentElement);
+      function v(name) { return (cs.getPropertyValue(name) || "").trim(); }
+      function hexToRgba(hex, a) {
+        var m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
+        if (!m) return "rgba(100,116,139," + a + ")";
+        return "rgba(" + parseInt(m[1], 16) + "," + parseInt(m[2], 16) + "," + parseInt(m[3], 16) + "," + a + ")";
       }
+      return { text: v("--muted") || "#94a3b8", grid: hexToRgba(v("--border"), 0.4) };
+    }
+
+    function renderChart(series) {
+      var ctx = document.getElementById("mainChart");
+      if (state.chart) state.chart.destroy();
+      // Chart spec built by the Charts module from pure inputs (no DOM reads inside).
+      var spec = Core.Charts.buildLineSpec(series, {
+        regression: document.getElementById("optRegression").checked,
+        movingAvg: document.getElementById("optMovingAvg").checked,
+        maWindow: parseInt(document.getElementById("maWindow").value, 10)
     });
-  }
+      var th = chartTheme();
+      state.chart = new Chart(ctx, {
+        type: "line",
+        data: spec,
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: spec.datasets.length > 1, labels: { color: th.text } } },
+          scales: {
+            x: { ticks: { color: th.text, maxTicksLimit: 12, autoSkip: true }, grid: { color: th.grid }, title: { display: true, text: store.get("aggMode") === "day" ? "Date (daily)" : "Period (" + store.get("aggMode") + ")" } },
+            y: { beginAtZero: true, ticks: { color: th.text }, grid: { color: th.grid }, title: { display: true, text: "Units sold" } }
+          }
+        }
+      });
+    }
 
   function renderCountries(byCountry) {
     var el = document.getElementById("countryList");
@@ -2389,11 +2420,38 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       syncChecklistState();
       renderAll();
     });
+        document.getElementById("ctryAllBtn").addEventListener("click", function () {
+          document.querySelectorAll("#countryChecklist input").forEach(function (i) { i.checked = true; });
+          syncChecklistState();
+          renderAll();
+        });
+        document.getElementById("ctryNoneBtn").addEventListener("click", function () {
+          document.querySelectorAll("#countryChecklist input").forEach(function (i) { i.checked = false; });
+          syncChecklistState();
+          renderAll();
+        });
+        // Product search: filter the visible checklist as you type (checkbox state is untouched).
+        document.getElementById("productSearch").addEventListener("input", applyProductSearch);
   ["optRegression", "optMovingAvg"].forEach(function (id) { document.getElementById(id).addEventListener("change", renderAll); });
   document.getElementById("maWindow").addEventListener("change", function () { renderAll(); });
   document.getElementById("resetBtn").addEventListener("click", App.resetFilters);
 
-  var cfg = loadCfg();
+    // ---- Light / dark theme (persisted; defaults to the built-in dark theme) ----
+    var THEME_LS_KEY = "salesTheme";
+    function applyTheme(mode) {
+      if (mode === "light") document.documentElement.classList.add("light");
+      else document.documentElement.classList.remove("light");
+      document.getElementById("themeBtn").textContent = mode === "light" ? "☀" : "☾";
+      try { localStorage.setItem(THEME_LS_KEY, mode === "light" ? "light" : "dark"); } catch (e) {}
+      if (state.chart) renderAll(); // rebuild chart with theme-matched colors
+    }
+    function toggleTheme() {
+      applyTheme(document.documentElement.classList.contains("light") ? "dark" : "light");
+    }
+    document.getElementById("themeBtn").addEventListener("click", toggleTheme);
+    applyTheme((function () { try { return localStorage.getItem(THEME_LS_KEY) || "dark"; } catch (e) { return "dark"; } })());
+
+    var cfg = loadCfg();
   document.getElementById("cfgBaseUrl").value = cfg.baseUrl || "";
   document.getElementById("cfgApiKey").value = cfg.apiKey || "";
   document.getElementById("cfgModel").value = cfg.model || "";
