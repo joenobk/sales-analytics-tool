@@ -2,7 +2,7 @@
 
 ## Goal and scope
 
-Upgrade the existing V6 sales analytics tool into a schema-agnostic, multi-dataset analytics workbench for sales analysts and business owners. Resolve business entities across inconsistent exports, provide immediate deterministic analysis, support manual and AI-assisted chart building, analyze customer text, and assemble a traceable Quarterly Business Review (QBR).
+Upgrade the existing V6 sales analytics tool into a schema-agnostic, multi-dataset analytics workbench for sales analysts and business owners. Resolve business entities across inconsistent exports, review a whole folder of exports and propose how each should be mapped, joined, and analyzed for human confirmation, provide immediate deterministic analysis, support manual and AI-assisted chart building, analyze customer text, and assemble a traceable Quarterly Business Review (QBR).
 
 The deliverable remains one self-contained `index.html`, opened directly from `file://`, with no backend, installation, or build step. Analytics work offline; optional AI uses the user-configured local or remote OpenAI-compatible endpoint.
 
@@ -278,6 +278,39 @@ Every section carries its provenance footer and every figure carries its citatio
 Export: print-optimized HTML that produces a clean PDF through the browser print dialog, plus a CSV appendix of every figure cited in the report, plus the saved-view JSON so the exact analysis can be rebuilt. Optional speaker notes per section.
 
 
+## Phase 11: AI-guided multi-file discovery and onboarding
+This phase turns the tool into a "point it at a folder and it figures out the business" onboarding step. A sales analyst drops a folder of mixed exports (e.g. `Activity.csv`, `SalesLines.csv`, `Sales.csv`, `Products.csv`, `Opportunity.csv`, `Leads.csv`, `Contacts.csv`) and the tool reviews every file together, proposes how each should be mapped, how they join, and what should be analyzed, then hands the whole proposal to the human to confirm or adjust before anything loads. It is the batch, cross-file upgrade of the Phase 1 AI assist and the Phase 3 join proposals: the model reasons over the entire corpus instead of one file at a time.
+
+**The sample corpus is the reference architecture.** The shipped sample set is a contact-centric CRM/ERP schema, and Phase 11 must build for it and files like it. Reading the seven files as one corpus: `Contacts.csv` (ContactID, FullName, Email, Phone, City, State, Country) is the person/customer dimension; `Leads.csv` (LeadID, ContactID, LeadSource, LeadStatus, CreatedDate, Notes) and `Activity.csv` (ActivityID, LeadID, ActivityType, Subject, DueDate, Completed, Notes) and `Opportunity.csv` (OpportunityID, ActivityID, OpportunityStage, EstimatedValue, CloseDate, SalesID) chain off it; `Sales.csv` (SalesID, ContactID, SalesDate, PaymentStatus) hangs off Contact; and `SalesLines.csv` (LineID, SalesID, ItemNo, Quantity, LinePrice, ProfitMargin, Tax) hangs off Sales and Product via `Products.csv` (ItemNo, ItemName, UnitPrice, Inventory, Category, IsActive). Two structural facts follow from this and drive the design:
+
+1. **The concept vocabulary must include the entities this schema uses.** Phase 2's concept set (product, account, rep, territory, geography, campaign, opportunity, activity, time, amount) is incomplete for this corpus: the customer entity arrives as **contact** (person), there is a distinct **lead** pre-opportunity entity, and the transactions arrive as **sale** and **sale line**. Phase 11 must extend the concept registry (or alias the Phase 2 vocabulary) so contact/lead/sale/sale-line are first-class concepts that filters, joins, and metric packs address. A concept-absent join or metric must be rejected with a specific error, per the authority rule.
+2. **The join graph must support multi-hop transitive paths, not only pairwise edges.** The corpus is a chain: Contact ← Lead ← Activity ← Opportunity, plus Contact ← Sale ← SaleLine ← Product. A single proposed edge (e.g. Activity→Opportunity on `ActivityID`) is only useful once the whole chain is declared, so the review board must present the connected path and let the user accept or reject it as a whole or per edge, and the join index must support lookups that traverse more than one hop (e.g. revenue per contact: SaleLine→Sale→Contact).
+
+ID-label pairs in the corpus (Products `ItemNo`/`ItemName`, Contacts `ContactID`/`FullName`) exercise the Phase 2 pairing; text columns (`Activity.Subject`, `Activity.Notes`, `Leads.Notes`) feed Phase 8; multiple time columns (`Sales.SalesDate`, `Activity.DueDate`, `Leads.CreatedDate`, `Opportunity.CloseDate`) make the date range apply per dataset; `Contacts.City/State/Country` is the geography hierarchy. The join on `SalesID` is one-to-many (a sale has many lines) and `Opportunity.SalesID` may be empty, so the design treats missing links as the normal case, never inventing them.
+
+**Folder discovery and batch intake.** Extend ingestion to accept a folder (an input with `webkitdirectory`) or a multi-select batch of files, and treat the set as one corpus. Each discovered data file becomes a candidate dataset. Files that parse to zero usable rows, or folders with no data files, are reported and skipped, never silently dropped. This is the mechanism that lets the tool review the whole Analysis folder at once.
+
+**Local pre-profile (deterministic, offline).** Before any AI call, run the existing Phase 1 inference and Phase 2 concept binding on every file and compute the Phase 3 pairwise join candidates. Produce a compact per-file profile: name, row count, date range, header list with inferred type/role/concept, null and distinct counts, and up to five sample values per column. Also produce the pairwise join candidate list with match rates. This profile is what the AI refines, and it is what makes the review board fully usable with the API unconfigured.
+
+**Corpus-level AI proposal.** Send the model one bounded corpus summary — one block per file containing headers, inferred types, roles, concept bindings, distinct/null counts, date range, row count, and ≤5 samples per column, plus the detected join candidates — and ask for a structured blueprint in strict JSON:
+- `datasetKind` and a one-line description per file.
+- proposed role/concept corrections per column (only the columns that should change; everything else keeps the local inference).
+- a join graph: edges between files on concepts, with a one-line rationale and the join direction. Edges must form connected paths, not dangling pairs — a proposal may connect Contact→Lead→Activity→Opportunity as one path.
+- an analysis plan: which metric packs apply (per the corpus kinds), suggested KPIs, and suggested charts as valid Phase 5 specs (e.g. revenue per contact and per product, win rate by stage, activity volume by type and by owner, lead conversion).
+
+Reuse the Phase 6 transport (native tool calling or the constrained fenced-JSON block) and the Phase 7 authority rule: the model proposes relationships and labels, it never invents values, and it may only reference concepts already present in the entity registry. **The payload must never include full rows.** Only the per-file profile above may leave the browser. Cap the corpus summary so a large folder stays within a bounded token budget, and if the cap truncates the summary, say so.
+
+**Review board.** A panel that presents the whole proposal for confirmation before anything is applied:
+- Per-file mapping cards showing the AI-proposed changes as a diff against the local inference, with the existing mapping controls for adjustment.
+- A join graph of proposed relationships with match rate and rationale, rendered as connected paths (the corpus chain) rather than isolated edges; each edge and each path is declarable, editable, or rejectable.
+- An analysis plan card with metric packs, KPIs, and suggested chart specs; every chart validates through the Phase 5 renderer before it is offered.
+- Bulk actions: **Accept all**, **Accept inferred** (drop AI changes, keep local), and **Reject**; plus per-item accept/adjust/reject.
+- Nothing loads until the human confirms. Confirmed decisions persist to localStorage keyed by a hash of the sorted set of file shapes, so the same folder auto-applies the review next time, and a changed file shape invalidates only what changed.
+
+**Graceful degradation.** With the AI settings blank or on a failed call, the review board still opens with the local pre-profile and the deterministic join candidates, and all the mapping/join controls work. AI is additive, never load-bearing.
+
+**Test additions.** A folder with N data files produces N candidate datasets in the review board. The serialized corpus payload contains headers and ≤5 samples but never a full data row. A blueprint proposing a role outside the role set, or a join on a concept absent from the entity registry, is rejected with a specific error. The concept vocabulary binds Contact, Lead, Sale and Sale-Line (the sample corpus entities) so a join on `ContactID` is recognized across Contacts/Leads/Sales rather than treated as three unrelated columns. The sample corpus produces the connected chain Contact←Lead←Activity←Opportunity and Contact←Sale←SaleLine←Product, and a multi-hop enrichment (revenue per contact via SaleLine→Sale→Contact) returns correct values. Accept-all applies every confirmed mapping and join; a partial accept applies only the accepted subset. With AI unconfigured, the board still lists locally inferred mappings and join candidates. The same folder shape auto-applies the persisted review on reload.
+
 ## Acceptance checks
 - The build is done when all of these pass:
 
@@ -295,6 +328,11 @@ Export: print-optimized HTML that produces a clean PDF through the browser print
 - With the AI settings blank, everything except the AI panel still works.
 - Opens from file:// with the network disabled. node .verify-core.js and node .verify-inline.js both pass.
 - A 500,000 row file loads with a progress indicator and no frozen tab.
+- Points at a folder containing the seven mixed exports (Activity, SalesLines, Sales, Products, Opportunity, Leads, Contacts): the review board lists all seven with inferred kinds (sales line, sale, opportunity, activity, lead, product and contact dimensions), the connected join chain (Contact←Lead←Activity←Opportunity and Contact←Sale←SaleLine←Product), and an analysis plan; after confirmation the tool loads all datasets with the joins declared.
+- An AI-proposed join across differently named columns on the same concept (e.g. `Leads.ContactID` ↔ `Contacts.ContactID`, or `SalesLines.ItemNo` ↔ `Products.ItemNo`) resolves through the entity registry and enriches correctly.
+- A multi-hop enrichment (revenue per contact, traversing SaleLine→Sale→Contact) returns values matching a manual recomputation across the chain.
+- No proposal applies without human confirmation; a rejected proposal leaves that dataset unmapped or that join undeclared.
+- The serialized corpus payload sent to the model contains headers and ≤5 samples per column and never a full data row.
 
 
 ## Working instructions
