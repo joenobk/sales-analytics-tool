@@ -127,7 +127,7 @@ License: MIT
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.03 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.04 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
     <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
     <span id="dropLabel">Choose CSV (or drag &amp; drop)</span>
@@ -142,6 +142,7 @@ License: MIT
   <h3 style="margin-top:0">Confirm column mapping</h3>
   <p id="mappingMsg" style="font-size:.85rem;color:#6b7280"></p>
   <div style="overflow-x:auto"><table id="mappingTable" style="width:100%;border-collapse:collapse;font-size:.85rem"></table></div>
+  <div id="entityReview" style="margin-top:14px"></div>
   <div class="row" style="margin-top:14px">
     <button type="button" id="mapApplyBtn" style="background:#f97316;border-color:#f97316;color:#fff;font-weight:600">Apply &amp; Load</button>
     <button type="button" id="mapAiAssistBtn">AI assist (propose roles)</button>
@@ -204,6 +205,11 @@ License: MIT
     <div class="card">
       <div class="panel-title">Sales by country</div>
       <div class="country-list" id="countryList"><span class="muted">No data loaded</span></div>
+    </div>
+
+    <div class="card">
+      <div class="panel-title">Data coverage (what this file contains)</div>
+      <div id="coveragePanel"><span class="muted">Load a CSV to see which concepts are present, partial, or absent.</span></div>
     </div>
 
     <section class="ai-panel">
@@ -450,6 +456,7 @@ License: MIT
     return fields.map(function (name, i) {
       var values = (dataRows || []).map(function (r) { return r ? r[i] : null; });
       var col = inferColumn(name, values);
+      col.idx = i; // header index — lets entity/coverage code address raw rows directly
       col.role = assignRole(name, col);
       var nonEmpty = values.filter(function (v) { return v != null && String(v).trim() !== ""; });
       col.nullCount = values.length - nonEmpty.length;
@@ -502,6 +509,14 @@ License: MIT
     var unitsIdx = idx[normalizeHeader(unitsCol.name)];
     var productIdx = idx[normalizeHeader(productCol.name)];
     var countryIdx = idx[normalizeHeader(countryCol.name)];
+    // Older stored mappings may predate the format field — re-infer from a sample instead of guessing.
+    if (!timeCol.format) {
+      var probe = (dataRows || []).map(function (r) { return r ? r[timeIdx] : null; }).filter(function (v) { return v != null && String(v).trim() !== ""; }).slice(0, 100);
+      var fmts = ["yyyymmdd", "iso", "monyear", "quarter", "mdy", "dmy"];
+      for (var fi2 = 0; fi2 < fmts.length; fi2++) {
+        if (probe.length && probe.filter(function (v) { return !!parseDateByFormat(v, fmts[fi2]); }).length / probe.length >= 0.8) { timeCol.format = fmts[fi2]; break; }
+      }
+    }
     var rows = [], badDates = 0, badUnits = 0;
     (dataRows || []).forEach(function (r) {
       if (!r || r.length === 0) return;
@@ -521,6 +536,294 @@ License: MIT
     return { rows: rows, errors: errors };
   }
   Schema.parseWithMapping = parseWithMapping;
+
+  // ---- Entities module (Phase 2: concept layer, ID/label pairing, registry, fuzzy matching) ----
+  var Entities = {};
+
+  var CONCEPTS = ["product", "account", "rep", "territory", "geography", "campaign", "opportunity", "activity", "time", "amount"];
+  // Starter synonym dictionary — header aliases per concept. Learns from user overrides (see recordOverride).
+  var SYNONYMS = {
+    product: ["sku", "item", "article", "partnumber", "material", "productid", "itemid"],
+    account: ["acct", "customer", "client", "company", "accountname", "custid", "accountid"],
+    rep: ["owner", "ae", "salesperson", "salesrep", "assignedto", "representative"],
+    territory: ["terr", "region", "area", "zone", "district"],
+    geography: ["country", "state", "province", "city", "market", "postal", "zip", "geo", "address"],
+    campaign: ["promo", "promotion", "initiative"],
+    opportunity: ["deal", "oppid", "opportunityid", "quote"],
+    activity: ["call", "email", "meeting", "touchpoint", "task"],
+    time: ["date", "close_date", "created", "period", "month", "day"],
+    amount: ["revenue", "amount", "value", "qty", "quantity", "units", "sold", "spend", "price", "cost", "margin", "total"]
+  };
+  Entities.CONCEPTS = CONCEPTS;
+  Entities.SYNONYMS = SYNONYMS;
+
+  // Identifier hygiene: IDs are always strings. Leading zeros survive load and join (00123 !== 123).
+  function idKey(v) { return String(v == null ? "" : v).trim(); }
+  Entities.idKey = idKey;
+
+  var OVERRIDE_LS_KEY = "salesConceptOverrides";
+  function loadOverrides() { try { return JSON.parse(localStorage.getItem(OVERRIDE_LS_KEY)) || {}; } catch (e) { return {}; } }
+  function recordOverride(header, concept) { // user override of an inferred binding — reused on future files
+    var o = loadOverrides(); o[normalizeHeader(header)] = concept;
+    try { localStorage.setItem(OVERRIDE_LS_KEY, JSON.stringify(o)); } catch (e) {}
+  }
+  Entities.recordOverride = recordOverride;
+
+  // Bind columns to business concepts from roles + name patterns. Filters/joins/metrics address concepts, not column names.
+  function bindConcepts(mapping) {
+    var ov = loadOverrides();
+    return (mapping || []).map(function (c) {
+      var concept = null;
+      if (ov[normalizeHeader(c.name)]) concept = ov[normalizeHeader(c.name)]; // learned overrides win
+      else if (c.role === "time") concept = "time";
+      else if (c.role === "measure") concept = "amount";
+      else if (c.role === "geo") concept = "geography";
+      else {
+        var nh = normalizeHeader(c.name);
+        for (var i = 0; i < CONCEPTS.length; i++) {
+          var syns = SYNONYMS[CONCEPTS[i]];
+          for (var j = 0; j < syns.length; j++) if (nh === syns[j] || nh.indexOf(syns[j]) >= 0) { concept = CONCEPTS[i]; break; }
+          if (concept) break;
+        }
+        if (!concept && c.role === "identifier") concept = "product"; // ID/label columns describe the entity — default to product
+      }
+      return Object.assign({}, c, { concept: concept });
+    });
+  }
+  Entities.bindConcepts = bindConcepts;
+
+  // Detect ID/label pairs describing one entity: name pattern (*_id/*_number/*_code/*_no with *_name/*_desc/*_title)
+  // plus a near one-to-one cardinality relationship.
+  function pairIdLabel(cols, rowsArr) {
+    // geo/time/measure columns are never ID or label candidates — Country_Code must not pair with Article_Name.
+    var usable = cols.filter(function (c) { return c.role !== "geo" && c.role !== "time" && c.role !== "measure"; });
+    var idCols = usable.filter(function (c) { return c.role === "identifier" || /(^|[^a-z])id$|number|code|\bno$/i.test(c.name); });
+    var labelCols = usable.filter(function (c) { return /name|desc|title/i.test(c.name) && c.type !== "date"; });
+    var pairs = [];
+    idCols.forEach(function (ic) {
+      var best = null, bestScore = 0;
+      labelCols.forEach(function (lc) {
+        if (lc === ic) return;
+        // cardinality: near one-to-one mapping between the two columns' distinct values. A few IDs with 2–3 competing
+        // labels are still paired — that is exactly what the conflict review exists for (never silently dropped).
+        var m = {};
+        for (var i = 0; i < rowsArr.length; i++) {
+          var a = idKey(rowsArr[i][ic.idx]), b = String(rowsArr[i][lc.idx] == null ? "" : rowsArr[i][lc.idx]).trim();
+          if (!a && !b) continue;
+          if (m[a] === undefined) m[a] = [b]; else if (m[a][0] !== b && m[a].indexOf(b) < 0) m[a].push(b);
+        }
+        var keys = Object.keys(m), conflicted = 0, maxLabels = 0;
+        keys.forEach(function (k) { if (m[k].length > 1) conflicted++; if (m[k].length > maxLabels) maxLabels = m[k].length; });
+        // Reject only when the mapping is broadly many-to-many. A few IDs with competing labels are still paired —
+        // that is exactly what the conflict review exists for (never silently dropped).
+        if (maxLabels > 3 || keys.length >= 4 && conflicted / keys.length > 0.25) return;
+        var distinctA = Object.keys(m).length, nonEmpty = rowsArr.filter(function (r) { return idKey(r[ic.idx]); }).length;
+        var score = distinctA ? Math.min(1, 2 * distinctA / (distinctA + Math.max(1, nonEmpty))) : 0; // high when ID is near-unique per row
+        if (score > bestScore) { bestScore = score; best = lc; }
+      });
+      if (best && bestScore >= 0.5) pairs.push({ idCol: ic.name, labelCol: best.name, concept: ic.concept || "product" });
+    });
+    return pairs;
+  }
+  Entities.pairIdLabel = pairIdLabel;
+
+  // Entity registry per concept: union of every attribute seen, with provenance. One ID -> multiple labels is a CONFLICT,
+  // surfaced with competing values + row counts and resolved by an explicit rule — never silently picked.
+  function buildEntityRegistry(rowsArr, cols, pairs) {
+    var reg = {};
+    (pairs || []).forEach(function (p) {
+      var ic = null, lc = null;
+      cols.forEach(function (c) { if (c.name === p.idCol) ic = c; if (c.name === p.labelCol) lc = c; });
+      if (!ic) return;
+      reg[p.concept] = { idCol: p.idCol, labelCol: lc ? lc.name : null, entries: {}, conflicts: [] };
+      var counts = {}; // id -> label -> {rows, last} (last row index — enables most-recent resolution)
+      for (var i = 0; i < rowsArr.length; i++) {
+        var a = idKey(rowsArr[i][ic.idx]); if (!a) continue;
+        var b = lc ? String(rowsArr[i][lc.idx] == null ? "" : rowsArr[i][lc.idx]).trim() : "";
+        var lbl = b === "" ? "(no label)" : b;
+        (counts[a] = counts[a] || {})[lbl] = (counts[a][lbl] || { rows: 0, last: -1 });
+        counts[a][lbl].rows++; counts[a][lbl].last = i;
+      }
+      Object.keys(counts).forEach(function (id) {
+        var labels = Object.keys(counts[id]).filter(function (l) { return l !== "(no label)"; });
+        var totalRows = Object.keys(counts[id]).reduce(function (x, l) { return x + counts[id][l].rows; }, 0);
+        if (labels.length > 1) reg[p.concept].conflicts.push({ id: id, labels: labels.map(function (l) { return { label: l, rows: counts[id][l].rows, last: counts[id][l].last }; }), totalRows: totalRows, resolvedBy: null, chosen: null });
+        else if (labels.length === 1) reg[p.concept].entries[id] = { id: id, label: labels[0], rows: counts[id][labels[0]].rows, provenance: [{ file: "current", attribute: "label" }] };
+        else reg[p.concept].entries[id] = { id: id, label: null, rows: totalRows, provenance: [] }; // ID only — display the ID and note no label exists
+      });
+    });
+    return reg;
+  }
+  Entities.buildEntityRegistry = buildEntityRegistry;
+
+  function resolveConflict(registry, concept, rule) { // "most-frequent" | "most-recent" | "manual:<label>" (user's explicit pick)
+    var r = registry && registry[concept]; if (!r) return null;
+    r.conflicts.forEach(function (c) {
+      if (rule === "manual") { c.resolvedBy = "manual"; } // chosen set by the user per conflict
+      else if (typeof rule === "string" && rule.indexOf("manual:") === 0) {
+        var pick = rule.slice(7);
+        c.chosen = pick; c.resolvedBy = "manual";
+      }
+      else {
+        var top = rule === "most-recent"
+          ? c.labels.slice().sort(function (a, b) { return b.last - a.last; })[0]
+          : c.labels.slice().sort(function (a, b) { return b.rows - a.rows; })[0];
+        c.chosen = top.label; c.resolvedBy = rule;
+      }
+    });
+    r.conflicts.forEach(function (c) { if (c.chosen && !r.entries[c.id]) r.entries[c.id] = { id: c.id, label: c.chosen, rows: c.totalRows, provenance: [{ file: "current", attribute: "label" }] }; else if (c.chosen && r.entries[c.id]) r.entries[c.id].label = c.chosen; });
+    return r;
+  }
+  Entities.resolveConflict = resolveConflict;
+
+  function entityDisplay(registry, concept, id) { // group/join on the ID, always; display the label when one exists
+    var e = registry && registry[concept] && registry[concept].entries[idKey(id)];
+    return e ? (e.label || e.id + " (no label)") : String(id);
+  }
+  Entities.entityDisplay = entityDisplay;
+
+  // Fuzzy matching with a human in the loop. Normalize: trim, collapse whitespace, case fold, strip punctuation,
+  // strip corporate suffixes, sort tokens. Auto-accept only above AUTO_ACCEPT; the uncertain band goes to a review queue.
+  var FUZZY_AUTO_ACCEPT = 0.92, FUZZY_REVIEW_MIN = 0.75;
+  Entities.FUZZY_AUTO_ACCEPT = FUZZY_AUTO_ACCEPT;
+  Entities.FUZZY_REVIEW_MIN = FUZZY_REVIEW_MIN;
+
+  function normalizeName(s) {
+    var t = String(s == null ? "" : s).trim().replace(/\s+/g, " ").toLowerCase();
+    t = t.replace(/[.,()]/g, " ");
+    t = t.replace(/\b(inc|llc|ltd|corp|co|gmbh|ag|sa|plc)\b/g, " ");
+    var tokens = t.split(" ").filter(Boolean).sort().join(" ");
+    return tokens;
+  }
+  Entities.normalizeName = normalizeName;
+
+  function similarityScore(a, b) { // Dice coefficient over character bigrams of the normalized names
+    var na = normalizeName(a), nb = normalizeName(b);
+    if (!na || !nb) return 0;
+    if (na === nb) return 1;
+    function bigrams(s) { var out = []; for (var i = 0; i < s.length - 1; i++) out.push(s.slice(i, i + 2)); return out; }
+    var A = bigrams(na), B = bigrams(nb); if (!A.length || !B.length) return na === nb ? 1 : 0;
+    var setB = {}, i; for (i = 0; i < B.length; i++) setB[B[i]] = (setB[B[i]] || 0) + 1;
+    var inter = 0; for (i = 0; i < A.length; i++) if (setB[A[i]]) { inter++; setB[A[i]]--; }
+    return (2 * inter) / (A.length + B.length);
+  }
+  Entities.similarityScore = similarityScore;
+
+  var FUZZY_LS_KEY = "salesFuzzyMatches"; // confirmed matches persist — the same reconciliation is never done twice
+  function loadFuzzyState() { try { return JSON.parse(localStorage.getItem(FUZZY_LS_KEY)) || { accepted: {}, queue: [] }; } catch (e) { return { accepted: {}, queue: [] }; } }
+  function saveFuzzyState(st) { try { localStorage.setItem(FUZZY_LS_KEY, JSON.stringify(st)); } catch (e) {} }
+  Entities.loadFuzzyState = loadFuzzyState;
+
+  // Match two sets of names (e.g. account names from two exports). Returns { accepted: [...], queue: [...] }.
+  function fuzzyMatch(namesA, namesB) {
+    var st = loadFuzzyState(), accepted = [], queue = [];
+    namesA.forEach(function (a) {
+      var key = normalizeName(a);
+      if (st.accepted[key]) { accepted.push({ a: a, b: st.accepted[key], score: 1, how: "persisted" }); return; }
+      var best = null, bestScore = 0;
+      namesB.forEach(function (b) {
+        var s = similarityScore(a, b);
+        if (s > bestScore) { bestScore = s; best = b; }
+      });
+      if (!best || bestScore < FUZZY_REVIEW_MIN) return; // weak match — never auto-merge a wrongly merged account
+      if (bestScore >= FUZZY_AUTO_ACCEPT) { st.accepted[key] = best; accepted.push({ a: a, b: best, score: bestScore, how: "auto" }); }
+      else queue.push({ a: a, b: best, score: bestScore }); // uncertain band — human confirms or rejects
+    });
+    st.queue = queue; saveFuzzyState(st);
+    return { accepted: accepted, queue: queue };
+  }
+  Entities.fuzzyMatch = fuzzyMatch;
+
+  function confirmFuzzy(a, b) { var st = loadFuzzyState(); st.accepted[normalizeName(a)] = b; st.queue = st.queue.filter(function (q) { return !(normalizeName(q.a) === normalizeName(a)); }); saveFuzzyState(st); }
+  Entities.confirmFuzzy = confirmFuzzy;
+
+  // Hierarchy detection: when every occurrence of value A in column X coincides with a single value in column Y, X rolls up into Y.
+  function detectHierarchy(rowsArr, cols) {
+    var out = [];
+    for (var i = 0; i < cols.length; i++) for (var j = 0; j < cols.length; j++) {
+      if (i === j || cols[i].type === "date" || cols[j].type === "date") continue;
+      var ix = cols[i].idx, iy = cols[j].idx; // idx may be absent on hand-built column lists — fall back to the position
+      if (ix == null) ix = i; if (iy == null) iy = j;
+      var m = {}, ok = true, n = 0;
+      for (var k = 0; k < rowsArr.length && ok; k++) {
+        var a = String(rowsArr[k][ix] == null ? "" : rowsArr[k][ix]).trim(), b = String(rowsArr[k][iy] == null ? "" : rowsArr[k][iy]).trim();
+        if (!a || !b) continue; n++;
+        if (m[a] === undefined) m[a] = b; else if (m[a] !== b) ok = false;
+      }
+      var distinctA = Object.keys(m).length;
+      if (ok && n >= 2 && distinctA >= 2) out.push({ child: cols[i].name, parent: cols[j].name }); // offer for confirmation — not applied silently
+    }
+    return out;
+  }
+  Entities.detectHierarchy = detectHierarchy;
+
+  // Geography: normalize country names to standard codes while keeping the original; extract only confidently parseable parts of a free-text address.
+  var COUNTRY_CODES = { germany:"DE", "united states":"US", usa:"US", us:"US", france:"FR", fr:"FR", sweden:"SE", se:"SE", finland:"FI", fi:"FI", austria:"AT", at:"AT", netherlands:"NL", nl:"NL", spain:"ES", es:"ES", italy:"IT", it:"IT", poland:"PL", pl:"PL", denmark:"DK", dk:"DK", norway:"NO", no:"NO", belgium:"BE", be:"BE", switzerland:"CH", ch:"CH" };
+  function normalizeCountry(v) { // returns { code, original } — code null when not confidently recognizable (never guessed)
+    var s = String(v == null ? "" : v).trim();
+    if (!s) return { code: null, original: s };
+    var key = s.toLowerCase().replace(/\b(federal republic of|kingdom of)\b/g, "").replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
+    if (COUNTRY_CODES[key]) return { code: COUNTRY_CODES[key], original: s };
+    if (/^[a-z]{2}$/i.test(s) && COUNTRY_CODES[s.toLowerCase()]) return { code: COUNTRY_CODES[s.toLowerCase()], original: s }; // already a code
+    return { code: null, original: s };
+  }
+  Entities.normalizeCountry = normalizeCountry;
+
+  var POSTAL_RE = /\b(\d{4,5}[- ]?\d{0,2}|[A-Z]{1,2}\d[A-Z]?\d?[A-Z]\d)\b/i; // DE/US-style + UK-style postal patterns
+  function extractAddress(text) { // confident parts only: postal code by pattern, country by known name — everything else stays raw
+    var s = String(text == null ? "" : text);
+    var out = { street: null, city: null, state: null, postal: null, country: null, raw: s };
+    var parts = s.split(",").map(function (p) { return p.trim(); }).filter(Boolean);
+    var pm = s.match(POSTAL_RE); if (pm) out.postal = pm[1].trim();
+    // country: check each comma-separated part individually — the whole string is rarely a bare country name
+    parts.forEach(function (p) { var cn = normalizeCountry(p); if (!out.country && cn.code) { out.country = cn.code; out.countryOriginal = cn.original; } });
+    // city: the segment after a comma that is not postal/country — only when unambiguous (exactly one such segment)
+    if (parts.length >= 2) {
+      var candidates = parts.filter(function (p, i) { return i > 0 && !POSTAL_RE.test(p) && !COUNTRY_CODES[p.toLowerCase()]; });
+      if (candidates.length === 1) out.city = candidates[0];
+    }
+    // postal-only address: the finest level we can claim is postal — no city/state invented
+    return out;
+  }
+  Entities.extractAddress = extractAddress;
+
+  function geoLevel(addr) { // finest confidently known level, coarsest-to-finest: country > state > city > postal (postal-only = finest level)
+    if (addr.country && addr.city) return "city";
+    if (addr.country && addr.state) return "state";
+    if (addr.postal) return "postal"; // postal code is the finest granularity — rollups stop here
+    if (addr.country) return "country";
+    return null;
+  }
+  Entities.geoLevel = geoLevel;
+
+  // Data coverage per concept: fill rate + which column provides it. Missing concepts are first-class — the UI hides what data can't support,
+  // and the AI is told exactly what is absent so it says "cannot compute" instead of estimating.
+  function coverage(rowsArr, cols) {
+    var out = {};
+    CONCEPTS.forEach(function (c) { out[c] = { present: false, fillRate: 0, columns: [] }; });
+    cols.forEach(function (col) {
+      if (!col.concept || !out[col.concept]) return;
+      var nonNull = 0;
+      for (var i = 0; i < rowsArr.length; i++) if (rowsArr[i][col.idx] != null && String(rowsArr[i][col.idx]).trim() !== "") nonNull++;
+      out[col.concept].present = true;
+      out[col.concept].columns.push(col.name);
+      out[col.concept].fillRate = rowsArr.length ? Math.round((nonNull / rowsArr.length) * 100) : 0;
+    });
+    return out;
+  }
+  Entities.coverage = coverage;
+
+  function schemaDescriptionForAi(cov) { // explicit statement of what is missing/partial — a model that knows there's no cost column won't invent margin
+    var lines = ["Concept coverage in this dataset:"];
+    CONCEPTS.forEach(function (c) {
+      var v = cov[c];
+      if (!v.present) lines.push("- " + c + ": ABSENT — do not estimate values for it; say it cannot be computed from this data.");
+      else if (v.fillRate < 100) lines.push("- " + c + ": PARTIAL (" + v.fillRate + "% of rows, column(s): " + v.columns.join(", ") + ") — views broken out by it cover only that share; say so when using it.");
+      else lines.push("- " + c + ": present on 100% of rows (column(s): " + v.columns.join(", ") + ").");
+    });
+    return lines.join("\n");
+  }
+  Entities.schemaDescriptionForAi = schemaDescriptionForAi;
 
   // ---- Store module (light observable state container) ----
   var Store = {};
@@ -686,7 +989,24 @@ License: MIT
   // ---- Insight module (AI prompt + statistical fallback) ----
   var Insight = {};
 
-  function buildAiPrompt(stats, aggMode) {
+  // Optional coverage section: tells the model which concepts are absent or only partially
+  // filled so it never invents analysis for dimensions that aren't in the data.
+  function coverageSection(mapping, rowsArr) {
+    if (!mapping || !rowsArr || !rowsArr.length) return "";
+    var cov = Entities.coverage(rowsArr, Entities.bindConcepts(mapping));
+    var missing = [], partial = [];
+    Entities.CONCEPTS.forEach(function (c) {
+      var e = cov[c];
+      if (!e.present) missing.push(c);
+      else if (e.fillRate < 100) partial.push(c + " (" + e.fillRate + "% filled, " + e.columns.join(", ") + ")");
+    });
+    var lines = ["", "DATA COVERAGE — concepts present in this dataset:"];
+    if (missing.length) lines.push("- ABSENT (no column): " + missing.join(", ") + ". Do not speculate about these dimensions; say they are not available.");
+    partial.forEach(function (p) { lines.push("- PARTIAL: " + p); });
+    return lines.join("\n");
+  }
+
+  function buildAiPrompt(stats, aggMode, mapping, rowsArr) {
     var unit = aggMode === "day" ? "day" : aggMode;
     return [
       "Sales data summary (aggregated by " + unit + ", filtered view):",
@@ -698,6 +1018,7 @@ License: MIT
       "- Trend: linear regression slope " + stats.slopePerBucket.toFixed(2) + " units/" + unit + " (" + (stats.trendPctOfMean * 100).toFixed(1) + "% of mean per-bucket volume)",
       "- Seasonality: peak month " + (stats.seasonPeak ? stats.seasonPeak.name + " (" + (stats.seasonPeak.deviationPct * 100).toFixed(1) + "% vs daily average)" : "n/a") + ", trough " + (stats.seasonTrough ? stats.seasonTrough.name + " (" + (stats.seasonTrough.deviationPct * 100).toFixed(1) + "%)" : "n/a"),
       "- Mean per bucket: " + stats.meanPerBucket.toFixed(1) + ", median: " + stats.medianPerBucket.toFixed(1),
+      coverageSection(mapping, rowsArr),
       "",
       "Provide concise, actionable insights on performance, concentration risk, and seasonality."
     ].join("\n");
@@ -792,7 +1113,7 @@ License: MIT
   AI.filterKey = filterKey;
 
   // ---- Export all modules + legacy aliases on the core namespace ----
-  var api = { Schema: Schema, Store: Store, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI };
+  var api = { Schema: Schema, Store: Store, Entities: Entities, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI };
   // Legacy top-level aliases (backward compat with existing tests)
   api.normalizeHeader = normalizeHeader;
   api.parseDateValue = parseDateValue;
@@ -863,6 +1184,7 @@ License: MIT
   // ---- File loading with Phase 1 mapping confirmation (nothing loads silently on a guess) ----
   var MAPPING_LS_PREFIX = "salesMapping:";
   var pendingFile = null; // { fields, rowsArr } awaiting user confirmation
+  var lastLoad = null;    // { fields, rowsArr, mapping } of the committed file — feeds coverage into AI prompts
 
   function loadStoredMapping(key) {
     try { return JSON.parse(localStorage.getItem(MAPPING_LS_PREFIX + key)); } catch (e) { return null; }
@@ -871,7 +1193,24 @@ License: MIT
     try { localStorage.setItem(MAPPING_LS_PREFIX + key, JSON.stringify(mapping.map(function (c) { return { name: c.name, type: c.type, role: c.role, format: c.format }; }))); } catch (e) {}
   }
 
-  function commitLoaded(rows, warnings) {
+  function commitLoaded(rows, warnings, mapping, fields, rowsArr) {
+    if (mapping && rowsArr) {
+      var f = fields || [];
+      // Stored mappings may predate the idx field — resolve it from header position so coverage can address raw rows.
+      var withIdx = mapping.map(function (c) { return Object.assign({}, c, { idx: c.idx != null ? c.idx : f.indexOf(c.name) }); });
+      lastLoad = { fields: f, rowsArr: rowsArr, mapping: withIdx }; // feeds coverage into AI prompts
+      // Entity registry for display: group/join on the ID, show the label when one exists.
+      var bound = Core.Entities.bindConcepts(withIdx);
+      var pairs = Core.Entities.pairIdLabel(bound, rowsArr);
+      lastLoad.registry = Core.Entities.buildEntityRegistry(rowsArr, bound, pairs);
+      // Re-apply the user's explicit conflict picks (persisted per header shape) so display matches what was confirmed.
+      var choices = loadConflictChoices(Core.mappingKey(f));
+      Object.keys(lastLoad.registry).forEach(function (concept) {
+        lastLoad.registry[concept].conflicts.forEach(function (c) {
+          if (choices[concept + ":" + c.id] !== undefined) Core.Entities.resolveConflict(lastLoad.registry, concept, "manual:" + choices[concept + ":" + c.id]);
+        });
+      });
+    }
     store.update({
       allRows: rows,
       products: Array.from(new Set(rows.map(function (r) { return r.articleId; }))).sort(),
@@ -881,6 +1220,7 @@ License: MIT
     document.getElementById("rowCount").textContent = rows.length.toLocaleString() + " valid rows";
     buildFilters();
     syncChecklistState(); // seed selectedProducts/selectedCountries in the store
+    renderCoverage(); // Phase 2: show which concepts this file has (and what's missing)
     renderAll();
   }
 
@@ -903,7 +1243,7 @@ License: MIT
           var stored = loadStoredMapping(key);
           if (stored && stored.length === fields.length) {
             var parsed = Core.parseWithMapping(fields, rowsArr, stored);
-            if (parsed.rows.length) { pendingFile = null; commitLoaded(parsed.rows, parsed.errors); return; }
+            if (parsed.rows.length) { pendingFile = null; commitLoaded(parsed.rows, parsed.errors, stored, fields, rowsArr); return; }
           }
           showMappingPanel();
         } catch (e) { showError("Unexpected error while loading CSV: " + e.message); console.error(e); }
@@ -918,9 +1258,167 @@ License: MIT
     if (!pendingFile) return;
     panelCols = Core.inferMapping(pendingFile.fields, pendingFile.rowsArr);
     renderMappingTable();
+    renderEntityReview();
     document.getElementById("mappingMsg").textContent = "Inferred types and roles for " + panelCols.length + " columns. Review the mapping — nothing loads until you confirm.";
     document.getElementById("mapAiStatus").textContent = "";
     document.getElementById("mappingPanel").style.display = "block";
+  }
+
+  var CONFLICT_LS_PREFIX = "salesConflict:";
+  function saveConflictChoice(key, concept, id, label) {
+    try { localStorage.setItem(CONFLICT_LS_PREFIX + key + ":" + concept + ":" + id, JSON.stringify(label)); } catch (e) {}
+  }
+  function loadConflictChoices(key) {
+    var out = {};
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && k.indexOf(CONFLICT_LS_PREFIX + key + ":") === 0) {
+          var rest = k.slice((CONFLICT_LS_PREFIX + key + ":").length);
+          out[rest] = JSON.parse(localStorage.getItem(k)); // "concept:id" -> label|null
+        }
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function applyConflictResolutions(registry) {
+    if (!pendingFile) return;
+    var choices = loadConflictChoices(Core.mappingKey(pendingFile.fields));
+    Object.keys(registry).forEach(function (concept) {
+      registry[concept].conflicts.forEach(function (c) {
+        var pick = choices[concept + ":" + c.id];
+        if (pick !== undefined) Core.Entities.resolveConflict(registry, concept, "manual:" + pick);
+      });
+    });
+  }
+
+  // Phase 2: entity review inside the mapping flow — detected ID/label pairs, conflicts with an
+  // explicit resolution choice (never silent), fuzzy matches in the uncertain band as a review
+  // queue, and hierarchy suggestions offered for confirmation.
+  function renderEntityReview() {
+    var box = document.getElementById("entityReview");
+    box.innerHTML = "";
+    if (!pendingFile) return;
+    var cols = Core.Entities.bindConcepts(panelCols);
+    var rowsArr = pendingFile.rowsArr;
+    var pairs = Core.Entities.pairIdLabel(cols, rowsArr);
+    var registry = Core.Entities.buildEntityRegistry(rowsArr, cols, pairs);
+    applyConflictResolutions(registry); // manual picks persist across reloads of the same file shape
+
+    if (pairs.length) {
+      var pDiv = document.createElement("div");
+      pDiv.className = "muted";
+      pDiv.style.cssText = "font-size:.82rem;margin-bottom:6px";
+      pDiv.textContent = "Detected ID + name pairs (one entity, grouped by ID): " + pairs.map(function (p) { return p.idCol + " → " + p.labelCol; }).join("; ");
+      box.appendChild(pDiv);
+    }
+
+    // Conflicts: one ID with multiple labels — surfaced with row counts and an explicit rule.
+    var conflictItems = [];
+    Object.keys(registry).forEach(function (concept) {
+      registry[concept].conflicts.forEach(function (c) { conflictItems.push({ concept: concept, c: c }); });
+    });
+    if (conflictItems.length) {
+      var h = document.createElement("div");
+      h.style.cssText = "font-size:.85rem;font-weight:600;margin-top:10px";
+      h.textContent = conflictItems.length + " ID(s) have more than one name — pick which to keep (nothing is chosen silently):";
+      box.appendChild(h);
+      conflictItems.forEach(function (item) {
+        var c = item.c;
+        var row = document.createElement("div");
+        row.style.cssText = "font-size:.82rem;margin:4px 0;display:flex;gap:10px;align-items:center";
+        var lab = document.createElement("span");
+        lab.textContent = item.concept + " ID " + c.id + ": ";
+        row.appendChild(lab);
+        var sel = document.createElement("select");
+        c.labels.forEach(function (l) {
+          var o = document.createElement("option");
+          o.value = l.label;
+          o.textContent = l.label + " (" + l.rows + " rows" + (c.chosen === l.label ? ", current: " + c.resolvedBy : "") + ")";
+          if (c.chosen === l.label) o.selected = true;
+          sel.appendChild(o);
+        });
+        var none = document.createElement("option");
+        none.value = "";
+        none.textContent = "(keep both — show ID only)";
+        sel.appendChild(none);
+        sel.addEventListener("change", function () { saveConflictChoice(Core.mappingKey(pendingFile.fields), item.concept, c.id, this.value || null); Core.Entities.resolveConflict(registry, item.concept, "manual:" + this.value); renderEntityReview(); });
+        row.appendChild(sel);
+        box.appendChild(row);
+      });
+    }
+
+    // Fuzzy review queue: uncertain-band matches from prior files are NEVER auto-merged — the user decides.
+    var fuzzyState = Core.Entities.loadFuzzyState();
+    if (fuzzyState.queue && fuzzyState.queue.length) {
+      var qh = document.createElement("div");
+      qh.style.cssText = "font-size:.85rem;font-weight:600;margin-top:10px";
+      qh.textContent = "Possible duplicate names from earlier files — confirm or dismiss:";
+      box.appendChild(qh);
+      fuzzyState.queue.forEach(function (q) {
+        var row = document.createElement("div");
+        row.style.cssText = "font-size:.82rem;margin:4px 0;display:flex;gap:10px;align-items:center";
+        var lab = document.createElement("span");
+        lab.textContent = q.a + " ≈ " + q.b + " (" + Math.round(q.score * 100) + "% similar)";
+        row.appendChild(lab);
+        var okBtn = document.createElement("button");
+        okBtn.type = "button";
+        okBtn.textContent = "Same entity";
+        okBtn.addEventListener("click", function () { Core.Entities.confirmFuzzy(q.a, q.b); renderEntityReview(); });
+        row.appendChild(okBtn);
+        box.appendChild(row);
+      });
+    }
+
+    // Hierarchy suggestions: offered for confirmation, not applied silently.
+    var hier = Core.Entities.detectHierarchy(rowsArr, cols);
+    if (hier.length) {
+      var hh = document.createElement("div");
+      hh.style.cssText = "font-size:.85rem;font-weight:600;margin-top:10px";
+      hh.textContent = "Possible roll-ups detected:";
+      box.appendChild(hh);
+      hier.forEach(function (p) {
+        var row = document.createElement("div");
+        row.style.cssText = "font-size:.82rem;margin:4px 0;display:flex;gap:10px;align-items:center";
+        var lab = document.createElement("span");
+        lab.textContent = p.child + " rolls up into " + p.parent + " (every value of " + p.child + " coincides with a single " + p.parent + ")";
+        row.appendChild(lab);
+        var okBtn = document.createElement("button");
+        okBtn.type = "button";
+        okBtn.textContent = "Confirm roll-up";
+        okBtn.addEventListener("click", function () { okBtn.disabled = true; okBtn.textContent = "Confirmed ✓"; });
+        row.appendChild(okBtn);
+        box.appendChild(row);
+      });
+    }
+
+    if (!pairs.length && !conflictItems.length && !(fuzzyState.queue || []).length && !hier.length) {
+      var none = document.createElement("div");
+      none.className = "muted";
+      none.style.cssText = "font-size:.82rem;margin-top:6px";
+      none.textContent = "No ID + name pairs, conflicts, or roll-ups detected in this file.";
+      box.appendChild(none);
+    }
+  }
+
+  // Phase 2: coverage panel — fill rate per concept; absent concepts are named so the user (and the AI) knows what's missing.
+  function renderCoverage() {
+    var el = document.getElementById("coveragePanel");
+    if (!lastLoad) { el.innerHTML = '<span class="muted">Load a CSV to see which concepts are present, partial, or absent.</span>'; return; }
+    var cov = Core.Entities.coverage(lastLoad.rowsArr, Core.Entities.bindConcepts(lastLoad.mapping));
+    var html = "";
+    Core.Entities.CONCEPTS.forEach(function (c) {
+      var e = cov[c];
+      if (!e.present) {
+        html += '<div style="font-size:.82rem;padding:3px 0;color:#b91c1c">✗ ' + c + ' — ABSENT in this file. No filter or breakdown by it is possible; the AI is told not to speculate about it.</div>';
+      } else if (e.fillRate < 100) {
+        html += '<div style="font-size:.82rem;padding:3px 0;color:#b45309">◐ ' + c + " — PARTIAL (" + e.fillRate + "% of rows, column" + (e.columns.length > 1 ? "s" : "") + ": " + e.columns.join(", ") + "). Breakdowns by it cover only that share.</div>";
+      } else {
+        html += '<div style="font-size:.82rem;padding:3px 0;color:#15803d">✓ ' + c + " — present on all rows (column" + (e.columns.length > 1 ? "s" : "") + ": " + e.columns.join(", ") + ").</div>";
+      }
+    });
+    el.innerHTML = html;
   }
 
   function renderMappingTable() {
@@ -961,9 +1459,10 @@ License: MIT
     var parsed = Core.parseWithMapping(pendingFile.fields, pendingFile.rowsArr, panelCols);
     if (!parsed.rows.length) { document.getElementById("mappingMsg").textContent = (parsed.errors && parsed.errors.length ? parsed.errors : ["Could not parse any rows with this mapping."]).join(" "); return; }
     saveStoredMapping(Core.mappingKey(pendingFile.fields), panelCols);
+    var fields2 = pendingFile.fields, rowsArr2 = pendingFile.rowsArr;
     pendingFile = null;
     document.getElementById("mappingPanel").style.display = "none";
-    commitLoaded(parsed.rows, parsed.errors);
+    commitLoaded(parsed.rows, parsed.errors, panelCols, fields2, rowsArr2);
   }
 
   function aiAssistMapping() {
@@ -1085,12 +1584,19 @@ License: MIT
     renderCountries(stats.byCountry);
   }
 
+  // Phase 2: group/join on the ID, display the label when one exists (entity registry).
+  function displayId(id) {
+    if (!lastLoad || !lastLoad.registry) return String(id);
+    var d = Core.Entities.entityDisplay(lastLoad.registry, "product", id);
+    return d && d !== String(id) ? d + " (" + id + ")" : String(id);
+  }
+
   function renderKpis(s) {
     document.getElementById("kpiTotal").textContent = s.total.toLocaleString();
-    document.getElementById("kpiTop").textContent = s.topProducts.length ? s.topProducts[0][0] : "–";
+    document.getElementById("kpiTop").textContent = s.topProducts.length ? displayId(s.topProducts[0][0]) : "–";
     document.getElementById("kpiTopSub").textContent = s.topProducts.length ? s.topProducts[0][1].toLocaleString() + " units" : "";
     var bp = s.bottomProduct;
-    document.getElementById("kpiBottom").textContent = bp ? bp[0] : "–";
+    document.getElementById("kpiBottom").textContent = bp ? displayId(bp[0]) : "–";
     document.getElementById("kpiBottomSub").textContent = bp ? bp[1].toLocaleString() + " units" : "";
     var unit = store.get("aggMode") === "day" ? "day" : store.get("aggMode");
     var dir = Math.abs(s.trendPctOfMean) < 0.05 ? "Flat" : (s.slopePerBucket > 0 ? "Rising" : "Falling");
@@ -1216,7 +1722,7 @@ License: MIT
     var aiCtx = store.get("aiCtx");
     if (!aiCtx || aiCtx.key !== key) {
       // Full visibility: send aggregate summary + complete month x product x country dataset.
-      aiCtx = { key: key, messages: [{ role: "user", content: Core.buildAiPrompt(stats, store.get("aggMode")) + "\n\n" + Core.buildFullDataPayload(rows) }] };
+      aiCtx = { key: key, messages: [{ role: "user", content: Core.buildAiPrompt(stats, store.get("aggMode"), lastLoad ? lastLoad.mapping : null, lastLoad ? lastLoad.rowsArr : null) + "\n\n" + Core.buildFullDataPayload(rows) }] };
     }
     aiCtx.messages.push({ role: "user", content: question ? question : "Provide your analysis of this data." });
     store.set("aiCtx", aiCtx);

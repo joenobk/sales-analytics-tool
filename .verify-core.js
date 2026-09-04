@@ -167,4 +167,96 @@ if (Core.mappingKey(header) === Core.mappingKey(["Date", "Article_ID", "Country_
 const bad = Core.parseWithMapping(header, dataRows, inferred.map(c => ({ ...c, role: c.role === "time" ? "ignore" : c.role })));
 if (bad.rows.length || !bad.errors.length) { console.error("FAIL: missing time column must produce errors"); process.exit(1); }
 
+// ---- Phase 2: entity/concept resolution (PRD test additions) ----
+
+// ID+name binds one entity; group by ID, display name.
+const entHeader = ["Date", "Article_ID", "Article_Name", "Country_Code", "Sold_Units"];
+const entRows = [
+  ["2024-01-02", "A-1", "Widget", "DE", "5"],
+  ["2024-02-03", "A-1", "Widget", "FR", "3"],
+  ["2024-03-04", "A-2", "Gadget", "DE", "7"]
+];
+const entInferred = Core.inferMapping(entHeader, entRows).map((c, i) => Object.assign({}, c, { idx: i })); // pairIdLabel/buildEntityRegistry address raw rows by header index
+const entParsed = Core.parseWithMapping(entHeader, entRows, entInferred.map(c => ({ name: c.name, type: c.type, role: c.role })));
+// raw rows with column indices for the Entities module (idKey-based)
+const idx = {}; entHeader.forEach((h, i) => idx[h] = i);
+const rawEntRows = entRows.map(r => r.map(v => v));
+const pairs = Core.Entities.pairIdLabel(entInferred, rawEntRows);
+if (!pairs.length || !pairs.some(p => p.idCol === "Article_ID" && p.labelCol === "Article_Name")) { console.error("FAIL: ID/label pair not detected:", JSON.stringify(pairs)); process.exit(1); }
+const registry = Core.Entities.buildEntityRegistry(rawEntRows, entInferred, pairs);
+if (!registry.product || !registry.product.entries["A-1"] || registry.product.entries["A-1"].label !== "Widget") { console.error("FAIL: entity registry did not bind ID+name"); process.exit(1); }
+const disp = Core.Entities.entityDisplay(registry, "product", "A-1");
+if (disp !== "Widget") { console.error("FAIL: entity display should show the label, got:", disp); process.exit(1); }
+
+// Leading zeros survive load and join.
+const zeroRows = [
+  ["2024-01-02", "00123", "ZeroPad", "DE", "1"],
+  ["2024-02-03", "123", "Other", "DE", "2"],
+  ["2024-03-04", "00123", "ZeroPad", "FR", "3"],
+  ["2024-04-05", "123", "Other", "SE", "4"]
+];
+const zeroParsed = Core.parseWithMapping(entHeader, zeroRows, entInferred.map(c => ({ name: c.name, type: c.type, role: c.role })));
+if (zeroParsed.rows.length !== zeroRows.length) { console.error("FAIL: leading-zero rows must load:", JSON.stringify(zeroParsed.errors)); process.exit(1); }
+const zrIdx = {}; entHeader.forEach((h, i) => zrIdx[h] = i);
+const zrReg = Core.Entities.buildEntityRegistry(zeroRows.map(r => r), entInferred, [{ idCol: "Article_ID", labelCol: "Article_Name", concept: "product" }]);
+if (!zrReg.product.entries["00123"] || !zrReg.product.entries["123"]) { console.error("FAIL: 00123 and 123 must be DISTINCT entities (leading zeros preserved)"); process.exit(1); }
+
+// One ID, two names -> conflict surfaced with row counts; resolved by explicit rule, never silent.
+const confRows = [["01/02/2024", "X-9", "Old Name", "DE", "1"], ["02/02/2024", "X-9", "New Name", "FR", "2"], ["03/02/2024", "X-9", "New Name", "DE", "3"]];
+const confReg = Core.Entities.buildEntityRegistry(confRows, entInferred, [{ idCol: "Article_ID", labelCol: "Article_Name", concept: "product" }]);
+if (!confReg.product.conflicts.length) { console.error("FAIL: one ID with two names must raise a conflict"); process.exit(1); }
+const conf = confReg.product.conflicts[0];
+if (conf.labels.length !== 2 || !conf.labels.every(l => l.rows > 0)) { console.error("FAIL: conflict must carry competing labels with row counts:", JSON.stringify(conf)); process.exit(1); }
+Core.Entities.resolveConflict(confReg, "product", "most-frequent");
+if (conf.chosen !== "New Name" || conf.resolvedBy !== "most-frequent") { console.error("FAIL: most-frequent resolution must pick the label with more rows:", JSON.stringify(conf)); process.exit(1); }
+
+// most-recent rule picks the last-seen label even when it is less frequent.
+const recRows = [["01/02/2024", "Z-1", "Older", "DE", "1"], ["02/02/2024", "Z-1", "Older", "FR", "2"], ["03/02/2024", "Z-1", "Newest", "DE", "3"]];
+const recReg = Core.Entities.buildEntityRegistry(recRows, entInferred, [{ idCol: "Article_ID", labelCol: "Article_Name", concept: "product" }]);
+Core.Entities.resolveConflict(recReg, "product", "most-recent");
+if (recReg.product.conflicts[0].chosen !== "Newest") { console.error("FAIL: most-recent must pick the last-seen label:", JSON.stringify(recReg.product.conflicts[0])); process.exit(1); }
+
+// Weak fuzzy match -> review queue, not auto-merge. Strong + persisted alias auto-applies to a second file.
+const fm = Core.Entities.fuzzyMatch(["Acme GmbH", "Beta Industries"], ["Acme Gmbh", "Beta Industrial Co"]);
+if (fm.queue.length !== 1 || !fm.queue[0].a.includes("Beta")) { console.error("FAIL: uncertain band must go to the review queue:", JSON.stringify(fm)); process.exit(1); }
+Core.Entities.confirmFuzzy("Beta Industries", "Beta Industrial Co");
+const fm2 = Core.Entities.fuzzyMatch(["Beta Industries"], ["Beta Industrial Co"]);
+if (!fm2.accepted.length || fm2.accepted[0].how !== "persisted") { console.error("FAIL: confirmed alias must persist and apply to the second file:", JSON.stringify(fm2)); process.exit(1); }
+
+// Absent concept -> coverage reports it; schema payload names missing concepts.
+const cov = Core.Entities.coverage(rawEntRows, Core.Entities.bindConcepts(entInferred));
+if (cov.product.present !== true || cov.rep.present !== false) { console.error("FAIL: coverage must mark present/absent concepts:", JSON.stringify(cov)); process.exit(1); }
+const aiDesc = Core.Entities.schemaDescriptionForAi(cov);
+if (!aiDesc.includes("rep: ABSENT") || !aiDesc.toLowerCase().includes("cannot be computed")) { console.error("FAIL: schema payload must name missing concepts and forbid estimating them:", aiDesc); process.exit(1); }
+
+// Learned concept override persists and applies to a second file.
+Core.Entities.recordOverride("Cust_Ref", "account");
+const secondFile = Core.Entities.bindConcepts([{ name: "Cust_Ref", type: "text", role: "dimension" }]);
+if (secondFile[0].concept !== "account") { console.error("FAIL: recorded override must apply to future files:", JSON.stringify(secondFile)); process.exit(1); }
+
+// Hierarchy detection: child column rolls up into parent when every occurrence coincides with a single value.
+const hierRows = [["DE", "Berlin"], ["DE", "Hamburg"], ["FR", "Lyon"]]; // col0=country, col1=city
+const hierCols = [{ name: "Country", type: "text", role: "geo", idx: 0 }, { name: "City", type: "text", role: "dimension", idx: 1 }];
+const hier = Core.Entities.detectHierarchy(hierRows, hierCols);
+if (!hier.some(h => h.child === "City" && h.parent === "Country")) { console.error("FAIL: City->Country hierarchy not detected:", JSON.stringify(hier)); process.exit(1); }
+
+// Geography: country name -> code keeping original; unknown country never guessed.
+const cn = Core.Entities.normalizeCountry("Germany");
+if (cn.code !== "DE" || cn.original !== "Germany") { console.error("FAIL: Germany must normalize to DE keeping the original:", JSON.stringify(cn)); process.exit(1); }
+const cn2 = Core.Entities.normalizeCountry("Republik of Nowhere");
+if (cn2.code !== null) { console.error("FAIL: unknown country must not be guessed:", JSON.stringify(cn2)); process.exit(1); }
+
+// Address extraction: confident parts only; postal-only address = finest level is postal.
+const addr = Core.Entities.extractAddress("Main Street 5, 80331 Munich, Germany");
+if (addr.postal !== "80331" || addr.country !== "DE") { console.error("FAIL: address extraction must pull postal + country:", JSON.stringify(addr)); process.exit(1); }
+const addr2 = Core.Entities.extractAddress("94123"); // postal-only
+if (!addr2.postal) { console.error("FAIL: bare postal code not recognized:", JSON.stringify(addr2)); process.exit(1); }
+if (Core.Entities.geoLevel(addr2) !== "postal") { console.error("FAIL: postal-only address must have finest level 'postal'"); process.exit(1); }
+
+// AI prompt carries the coverage section: absent concepts named, model told not to speculate.
+const p2 = Core.buildAiPrompt(stats, "month", entInferred, rawEntRows);
+if (!p2.includes("DATA COVERAGE") || !/ABSENT/.test(p2)) { console.error("FAIL: AI prompt must include coverage section naming absent concepts:\n" + p2); process.exit(1); }
+const p3 = Core.buildAiPrompt(stats, "month"); // no mapping -> no coverage section, still valid
+if (p3.includes("DATA COVERAGE")) { console.error("FAIL: AI prompt without a loaded file must not claim coverage"); process.exit(1); }
+
 console.log("\nALL CHECKS PASSED");
