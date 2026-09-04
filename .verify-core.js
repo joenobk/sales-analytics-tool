@@ -67,11 +67,11 @@ console.log("missing-col error:", badParsed.errors[0]);
 const badDate = Core.parseCsvData(header, [["99999999","1","AT","5"],["20170817","1","AT","3"]]);
 if (badDate.rows.length !== 1 || !/skipped/i.test(badDate.errors[0])) { console.error("FAIL: invalid date handling"); process.exit(1); }
 
-// 9. Phase 0: all eight named modules present on the namespace
-for (const modName of ["Schema", "Store", "Metrics", "Charts", "Insight", "Text", "Report", "AI"]) {
+// 9. Phase 0: all named modules present on the namespace (eleven after Phases 2-3)
+for (const modName of ["Schema", "Datasets", "Entities", "Joins", "Store", "Metrics", "Charts", "Insight", "Text", "Report", "AI"]) {
   if (!Core[modName] || typeof Core[modName] !== "object") { console.error(`FAIL: module ${modName} missing on SalesCore`); process.exit(1); }
 }
-console.log("modules present:", ["Schema","Store","Metrics","Charts","Insight","Text","Report","AI"].join(", "));
+console.log("modules present:", ["Schema","Datasets","Entities","Joins","Store","Metrics","Charts","Insight","Text","Report","AI"].join(", "));
 
 // 10. Phase 0: HTML sanitizer strips script/style tags, on* attrs, javascript: URLs
 const dirty = '<script>alert(1)</script><div onclick="x()" style="color:red">ok</div><a href="javascript:void(0)">j</a><style>p{}</style>';
@@ -258,5 +258,90 @@ const p2 = Core.buildAiPrompt(stats, "month", entInferred, rawEntRows);
 if (!p2.includes("DATA COVERAGE") || !/ABSENT/.test(p2)) { console.error("FAIL: AI prompt must include coverage section naming absent concepts:\n" + p2); process.exit(1); }
 const p3 = Core.buildAiPrompt(stats, "month"); // no mapping -> no coverage section, still valid
 if (p3.includes("DATA COVERAGE")) { console.error("FAIL: AI prompt without a loaded file must not claim coverage"); process.exit(1); }
+
+// ---- Phase 3: Datasets registry + Joins (concept-based left joins) ----
+
+// Synthetic dataset A: transactions. Dataset B: campaigns keyed by product code.
+const aFields = ["Date", "Article_ID", "Country_Code", "Units"];
+const aRowsArr = [
+  ["2017-08-17", "A1", "AT", "5"],
+  ["2017-08-18", "A1", "DE", "3"],
+  ["2017-08-19", "B2", "AT", "7"]
+];
+const bFields = ["Product_Code", "Campaign_Name", "Spend"];
+const bRowsArr = [
+  ["A1", "Summer Promo", "120"],
+  ["A1", "Q3 Push", "45"],
+  ["C3", "Winter Sale", "99"]
+];
+
+// App-layer mapping shape: array of column objects with resolved idx + role (from inference) + concept.
+function mkMap(fields, concepts, roles) {
+  return fields.map((name, i) => ({ name: name, idx: i, role: roles ? roles[i] : null, type: "text", concept: concepts[i] || null }));
+}
+const aMap = mkMap(aFields, ["time", "product", "geography", "amount"], ["time", "identifier", "geo", "measure"]);
+const bMap = mkMap(bFields, ["product", null, "amount"], ["identifier", "dimension", "measure"]);
+
+// Datasets registry round-trip (metadata only).
+const recA = Core.Datasets.add({ name: "Sales 2017", sourceFile: "sales.csv", rowCount: aRowsArr.length, schema: aFields });
+if (!recA.id || recA.kind !== "generic" || recA.hasData !== true) { console.error("FAIL: Datasets.add must set id/kind/hasData:", JSON.stringify(recA)); process.exit(1); }
+const recB = Core.Datasets.add({ name: "Campaigns", sourceFile: "campaigns.xlsx", rowCount: bRowsArr.length, schema: bFields, kind: "campaigns" });
+if (recB.kind !== "campaigns") { console.error("FAIL: Datasets.add must keep a valid explicit kind"); process.exit(1); }
+Core.Datasets.saveMeta([recA, recB]);
+const meta = Core.Datasets.loadMeta();
+if (meta.length !== 2 || meta[0].id !== recA.id || meta[1].kind !== "campaigns") { console.error("FAIL: Datasets saveMeta/loadMeta round-trip:", JSON.stringify(meta)); process.exit(1); }
+console.log("datasets registry:", meta.map(m => m.name + "(" + m.kind + ")").join(", "), "| rows persisted in metadata only");
+
+// Joins.buildIndex on B's product column (concept-addressed).
+const bIdx = Core.Joins.buildIndex(bRowsArr, bMap, "product");
+if (!bIdx || !bIdx.index["A1"] || bIdx.index["A1"].length !== 2) { console.error("FAIL: buildIndex must hash A1 -> both rows:", JSON.stringify(bIdx)); process.exit(1); }
+
+// Joins.evaluate: A has 3 rows, only A1 matches (2 of 3).
+const stat = Core.Joins.evaluate(aRowsArr, aMap, bIdx, { fromConcept: "product", toConcept: "product" });
+if (!stat || stat.matchedRows !== 2 || stat.rows !== 3) { console.error("FAIL: evaluate stats wrong:", JSON.stringify(stat)); process.exit(1); }
+
+// Joins.enrichColumn: sum Spend per product; unmatched B2 -> null.
+const enriched = Core.Joins.enrichColumn(aRowsArr, aMap, bIdx, bRowsArr, bMap, { fromConcept: "product", toConcept: "product" }, "amount");
+if (!enriched || enriched[0] !== 165 || enriched[1] !== 165 || enriched[2] !== null) { console.error("FAIL: enrichColumn must sum one-to-many and null unmatched:", JSON.stringify(enriched)); process.exit(1); }
+
+// Joins.propose: A↔B share the product concept at a high match rate; no collision with unrelated datasets.
+recA.mapping = aMap; recB.mapping = bMap; // app layer stores the resolved mapping on each record
+const proposals = Core.Joins.propose(recA, aRowsArr, recB, bRowsArr);
+if (!proposals.length || proposals[0].fromConcept !== "product" || proposals[0].matchRate < 0.5) { console.error("FAIL: propose must surface the product join:", JSON.stringify(proposals)); process.exit(1); }
+const cFields = ["Call_ID", "Rep_Name"];
+const cRowsArr = [["c1", "Ann"], ["c2", "Bob"]];
+const cMap = mkMap(cFields, [null, "rep"]);
+const recC = Core.Datasets.add({ name: "Calls", sourceFile: "calls.csv", rowCount: 2, schema: cFields });
+recC.mapping = cMap;
+const noProposals = Core.Joins.propose(recA, aRowsArr, recC, cRowsArr);
+if (noProposals.length !== 0) { console.error("FAIL: datasets sharing no concepts must yield no proposals:", JSON.stringify(noProposals)); process.exit(1); }
+
+// Concept lookup helpers used by the filter bus.
+if (Core.Entities.columnForConcept(aMap, "product") !== "Article_ID" || Core.Entities.columnForConcept(bMap, "geography") !== null) { console.error("FAIL: columnForConcept lookups wrong"); process.exit(1); }
+
+// Schema.parseGeneric: lenient parse — no rows dropped, missing roles -> null + warnings.
+const gB = Core.parseGeneric(bFields, bRowsArr, mkMap(bFields, ["product", null, "amount"], ["identifier", "dimension", "measure"]));
+if (!gB || gB.rows.length !== 3) { console.error("FAIL: parseGeneric must keep every row:", JSON.stringify(gB && gB.rows)); process.exit(1); }
+if (gB.rows[0].articleId !== "A1" || gB.rows[0].units !== 120 || gB.rows[0].date !== null) { console.error("FAIL: parseGeneric field mapping wrong:", JSON.stringify(gB.rows[0])); process.exit(1); }
+if (!gB.warnings.length || !/time/i.test(gB.warnings.join(" "))) { console.error("FAIL: parseGeneric must warn about the missing time column:", JSON.stringify(gB.warnings)); process.exit(1); }
+const gA = Core.parseGeneric(aFields, [["2017-08-17", "", "AT", ""], ["2017-08-18", "A1", null, "3"]], mkMap(aFields, ["time", "product", "geography", "amount"], ["time", "identifier", "geo", "measure"]));
+if (gA.rows.length !== 2 || gA.rows[0].articleId !== null || gA.rows[0].units !== null || gA.rows[1].countryCode !== null) { console.error("FAIL: parseGeneric must map missing values to null without dropping rows:", JSON.stringify(gA.rows)); process.exit(1); }
+if (gA.warnings.length !== 0) { console.error("FAIL: parseGeneric with all roles present must not warn:", JSON.stringify(gA.warnings)); process.exit(1); }
+
+// Phase 3: a persisted time format from another source must not be trusted blindly — the
+// format is resolved from the ACTUAL data (xlsx/dash-style dates against a yyyymmdd mapping).
+const wrongFmt = Core.parseGeneric(
+  ["Date", "Article_ID", "Country_Code", "Sold_Units"],
+  [["2017-09-01", "332", "SE", "2"], ["2017-09-02", "332", "DK", "3"]],
+  mkMap(["Date", "Article_ID", "Country_Code", "Sold_Units"], ["time", "product", "geography", "amount"], ["time", "identifier", "geo", "measure"]).map(function (c) { return c.name === "Date" ? Object.assign({}, c, { format: "yyyymmdd" }) : c; })
+);
+if (!wrongFmt.rows.length || wrongFmt.rows[0].date === null || wrongFmt.rows[0].date.toISOString().slice(0, 10) !== "2017-09-01") { console.error("FAIL: parseGeneric must re-probe the time format from data:", JSON.stringify(wrongFmt.rows.map(function (r) { return r.date; }))); process.exit(1); }
+// Same protection on the strict path (re-load of a shared header shape with a persisted format).
+const wrongFmtStrict = Core.parseWithMapping(
+  ["Date", "Article_ID", "Country_Code", "Sold_Units"],
+  [["2017-09-01", "332", "SE", "2"], ["2017-09-02", "332", "DK", "3"]],
+  mkMap(["Date", "Article_ID", "Country_Code", "Sold_Units"], ["time", "product", "geography", "amount"], ["time", "identifier", "geo", "measure"]).map(function (c) { return c.name === "Date" ? Object.assign({}, c, { format: "yyyymmdd" }) : c; })
+);
+if (wrongFmtStrict.rows.length !== 2 || wrongFmtStrict.rows[0].date.toISOString().slice(0, 10) !== "2017-09-01") { console.error("FAIL: parseWithMapping must re-probe the time format from data:", JSON.stringify(wrongFmtStrict.rows)); process.exit(1); }
 
 console.log("\nALL CHECKS PASSED");
