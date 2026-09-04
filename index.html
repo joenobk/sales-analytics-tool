@@ -127,7 +127,7 @@ License: MIT
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.01 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
     <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
     <span id="dropLabel">Choose CSV (or drag &amp; drop)</span>
@@ -149,6 +149,13 @@ License: MIT
     <div class="filter-group">
       <h3>Countries (multi-select)</h3>
       <div class="checklist" id="countryChecklist"><span class="muted">Load a CSV first</span></div>
+    </div>
+    <div class="filter-group">
+      <h3>Date range</h3>
+      <div style="display:flex;flex-direction:column;gap:6px;font-size:.85rem">
+        <label class="muted" for="dateFrom">From<input type="date" id="dateFrom" style="width:100%;margin-top:4px"></label>
+        <label class="muted" for="dateTo">To<input type="date" id="dateTo" style="width:100%;margin-top:4px"></label>
+      </div>
     </div>
     <div class="filter-group">
       <h3>Aggregation</h3>
@@ -179,7 +186,7 @@ License: MIT
     </div>
 
     <div class="card">
-      <div class="panel-title">Units sold over time</div>
+      <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">Units sold over time<button id="exportCsvBtn" type="button" title="Download the current filtered rows as CSV (stays in your browser)">Export CSV</button></div>
       <div id="chartWrap"><canvas id="mainChart"></canvas></div>
     </div>
 
@@ -541,10 +548,44 @@ License: MIT
   function selectedCountries() {
     return Array.from(document.querySelectorAll("#countryChecklist input:checked")).map(function (i) { return i.value; });
   }
+  function dateRange() { // -> [fromMs|null, toMsExclusive|null] from the sidebar date inputs
+    var f = document.getElementById("dateFrom").value;
+    var t = document.getElementById("dateTo").value;
+    var fromMs = f ? new Date(f + "T00:00:00").getTime() : null;
+    var toMs = t ? new Date(t + "T23:59:59.999").getTime() : null;
+    return [fromMs, toMs];
+  }
+
   function filteredRows() {
     var prods = new Set(selectedProducts());
     var countries = new Set(selectedCountries());
-    return state.allRows.filter(function (r) { return prods.has(r.articleId) && countries.has(r.countryCode); });
+    var range = dateRange();
+    return state.allRows.filter(function (r) {
+      if (!prods.has(r.articleId) || !countries.has(r.countryCode)) return false;
+      var t = r.date.getTime();
+      if (range[0] != null && t < range[0]) return false;
+      if (range[1] != null && t > range[1]) return false;
+      return true;
+    });
+  }
+
+  // ---- CSV export of the current filtered view (client-side download only) ----
+  function exportCsv() {
+    var rows = filteredRows();
+    if (!rows.length) { showError("Nothing to export — no data in the current filter view."); return; }
+    var lines = ["Date,Article_ID,Country_Code,Sold_Units"];
+    rows.slice().sort(function (a, b) { return a.date - b.date || String(a.articleId).localeCompare(String(b.articleId)) || a.countryCode.localeCompare(b.countryCode); })
+      .forEach(function (r) { lines.push(r.date.toISOString().slice(0, 10) + "," + r.articleId + "," + r.countryCode + "," + r.units); });
+    var blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    var dmin = rows.reduce(function (m, r) { return Math.min(m, r.date.getTime()); }, Infinity);
+    var dmax = rows.reduce(function (m, r) { return Math.max(m, r.date.getTime()); }, -Infinity);
+    a.download = "sales_filtered_" + new Date(dmin).toISOString().slice(0, 10).replace(/-/g, "") + "_to_" + new Date(dmax).toISOString().slice(0, 10).replace(/-/g, "") + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
   }
 
   // ---- Rendering ----
@@ -623,7 +664,8 @@ License: MIT
 
   function filterKey() { // order-independent so re-checking the same set doesn't reset context
     var s = function (a) { return a.slice().sort(); };
-    return JSON.stringify({ p: s(selectedProducts()), c: s(selectedCountries()), a: state.aggMode });
+    var range = dateRange();
+    return JSON.stringify({ p: s(selectedProducts()), c: s(selectedCountries()), a: state.aggMode, d: [range[0], range[1]] });
   }
 
   function renderMd(text) {
@@ -689,7 +731,7 @@ License: MIT
     // "still working" signal, since a non-streaming request gives no finer status —
     // for local models most of this time is model warm-up (15s+) then processing.
     pending.innerHTML = '<div class="ai-status"><div class="spinner"></div><span class="phase">Preparing…</span><span class="elapsed"></span></div>' +
-      '<div class="muted" style="margin-top:6px;font-size:.78rem">Data sent to the model. Local models can take 15s+ to warm up, then longer for larger data — this is normal.</div>';
+      '<div class="muted" style="margin-top:6px;font-size:.78rem">It may take about a minute just to load the model, and several minutes to analyze large data sets. Please wait — do not close or refresh this page.</div>';
     hist.insertBefore(pending, hist.firstChild);
     var phaseEl = pending.querySelector(".phase");
     var elapsedEl = pending.querySelector(".elapsed");
@@ -744,11 +786,14 @@ License: MIT
   window.App = {
     onFilterChange: function () { renderAll(); },
     handleFile: handleFile,
+    exportCsv: exportCsv,
     resetFilters: function () {
       document.querySelectorAll("#productList input").forEach(function (i) { i.checked = true; });
       document.querySelectorAll("#countryChecklist input").forEach(function (i) { i.checked = true; });
       document.querySelector('input[name="agg"][value="day"]').checked = true;
       state.aggMode = "day";
+      document.getElementById("dateFrom").value = "";
+      document.getElementById("dateTo").value = "";
       renderAll();
     }
   };
@@ -765,6 +810,8 @@ License: MIT
   });
 
   document.querySelectorAll('input[name="agg"]').forEach(function (r) { r.addEventListener("change", function () { state.aggMode = this.value; renderAll(); }); });
+  ["dateFrom", "dateTo"].forEach(function (id) { document.getElementById(id).addEventListener("change", function () { renderAll(); }); });
+  document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
   document.getElementById("prodAllBtn").addEventListener("click", function () {
     document.querySelectorAll("#productList input").forEach(function (i) { i.checked = true; });
     renderAll();
