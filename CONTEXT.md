@@ -1,6 +1,6 @@
 # CONTEXT — Current Task
 
-## Status: COMPLETE — v6 shipped & verified in real Chrome over file://
+## Status: V7 PRD integrated; application remains V6
 **Repo:** https://github.com/joenobk/sales-analytics-tool (branch `main`)
 **Run it:** open `index.html` directly in a browser, or `npx serve .`. No build step, no network needed. Header shows **"v6 (self-contained)"** with an orange star icon — if your copy doesn't show that tag/icon, you have the old file; re-download/hard-refresh.
 
@@ -17,9 +17,10 @@ Full-data visibility for the AI: first request now includes the COMPLETE filtere
 In-flight progress indicator: while an analysis is running, a status entry at the top of the AI history shows an animated spinner + phase label ("Preparing…" → "Analyzing… (N KB sent to model)" → "Receiving response…") + a live elapsed timer ticking every 500ms. The Analyze button is disabled and relabeled "Analyzing…" while in-flight; on failure the elapsed time is included in the error line. A muted note explains that local models take 15s+ to warm up so long waits are expected (a non-streaming call returns no intermediate status, so timer + payload size is the truthful signal).
 
 ## Next steps (in order, for future sessions)
-1. User-side confirmation: open v6 in their browser and load `Historical_Data.csv` (should show "4,849 valid rows" + KPIs). Then exercise filters/aggregation/AI panel against at least 3 OpenAI-compatible providers (PRD success metric), including follow-up questions to confirm context caching.
-2. Optional polish from PRD §4: consider date-range filter and CSV export of filtered view.
-3. If requested: add a README.md pointing to the repo + run instructions.
+1. Read `index.html` fully and implement PRD Phase 0: modular core, safe rendering/markdown sanitization, and observable state.
+2. Extend and pass `node .verify-core.js` and `node .verify-inline.js`; report phase coverage before continuing.
+3. Implement Phase 1 schema inference and confirmation before Phases 2–10 in order.
+4. The expanded `PRD.md` is authoritative over older planning documents. V7 has been specified, not implemented in this documentation session.
 
 ## Decisions already made (do NOT re-deliberate)
 - Single self-contained `index.html`; PapaParse, Chart.js and marked are inlined (no CDN, no npm/build).

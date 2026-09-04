@@ -50,3 +50,12 @@
 - **Honesty note:** a non-streaming chat/completions call returns no intermediate status — headers arrive only when the model finishes — so the timer + payload size is the truthful "still working" signal; we do not fake finer-grained phases.
 - **Verification:** Extended real-Chrome e2e with a 1.2s-delayed stubbed fetch: spinner present, phase shows "Analyzing… (N KB sent to model)", elapsed timer ticking ("· 1s"), button disabled + relabeled while in-flight; all prior checks still pass. ALL REAL-BROWSER CHECKS PASSED, zero console errors.
 - **Errors found & fixed:** none in app code — two e2e test bugs fixed (stub recorded the call after its delay so follow-up assertions saw 1 call; progress snapshot taken before first timer tick).
+
+## 2026-09-04 — V7 PRD integration
+- **Did:** Integrated the complete attached V7 remodeling plan into PRD.md, retaining all eleven phases, tool/chart contracts, phase tests, and final acceptance checks. Preserved legacy regression anchors and UX requirements; reconciled offline dependencies, schema flexibility, query-based AI, missing periods, manual fallbacks, and provenance. Corrected harness references to the existing hyphenated filenames.
+- **Project context:** Updated .instructions.md and CONTEXT.md for phased V7 delivery; added a comment to the ignored .env without changing settings. Application code is unchanged and remains V6.
+- **Verification:** Both node .verify-core.js and node .verify-inline.js passed; legacy 4,849 rows and 9,537 units confirmed. All Phase 0–10 headings and acceptance checks present; git diff --check passed.
+- **Errors found & fixed:** Initial edit command failed before execution because nested backticks conflicted with its JavaScript wrapper; switched to an explicitly quoted command. No files were changed by the failed attempt.
+- **Loop traps hit:** 0 after reading project rules; initial shell-tool startup was polled repeatedly before those rules were available.
+- **Next:** Implement Phase 0, then Phase 1, with growing test coverage and passing gates before each subsequent phase.
+- **Publication status:** Files saved locally. Commit/push was blocked by automatic approval review because remote publication was not explicitly authorized; no commit or push completed.
