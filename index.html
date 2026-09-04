@@ -169,7 +169,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.06 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.07 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
@@ -258,7 +258,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       </div>
 
       <div class="card">
-        <div class="panel-title">Data coverage (what this file contains)</div>
+              <div class="panel-title">Data coverage (what this file contains)<button type="button" id="remapBtn" title="Re-open the field assignment panel for this dataset (parses the data again with your changes)">Edit mapping</button></div>
         <div id="coveragePanel"><span class="muted">Load a CSV to see which concepts are present, partial, or absent.</span></div>
       </div>
       </div>
@@ -1609,6 +1609,25 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     document.getElementById("mappingPanel").style.display = "block";
   }
 
+    // Re-open the assignment panel for the ACTIVE dataset, pre-filled with its current confirmed
+    // mapping so the user revises rather than starting from scratch. Apply re-parses and replaces
+    // the dataset in place (same key), and the revised mapping becomes the stored one.
+    function startRemap() {
+      var rec = datasetById(activeId);
+      if (!rec || !rec.hasData) { showError("Load a dataset first — then you can edit its field assignments."); return; }
+      pendingFile = { name: rec.name, sourceFile: rec.sourceFile, fields: rec.fields, rowsArr: rec.rowsArr };
+      panelCols = (rec.mapping || []).map(function (c) {
+        // Stored mappings may lack display extras the table shows — default them.
+        return Object.assign({}, c, { samples: c.samples || [], nullCount: c.nullCount != null ? c.nullCount : "–", distinctCount: c.distinctCount != null ? c.distinctCount : "–" });
+      });
+      if (!panelCols.length) panelCols = Core.inferMapping(rec.fields, rec.rowsArr);
+      renderMappingTable();
+      renderEntityReview();
+      document.getElementById("mappingMsg").textContent = "Revising the confirmed mapping for \u201C" + rec.name + "\u201D — change roles are re-applied to the data when you click Apply & Load.";
+      document.getElementById("mapAiStatus").textContent = "";
+      document.getElementById("mappingPanel").style.display = "block";
+    }
+
   var CONFLICT_LS_PREFIX = "salesConflict:";
   function saveConflictChoice(key, concept, id, label) {
     try { localStorage.setItem(CONFLICT_LS_PREFIX + key + ":" + concept + ":" + id, JSON.stringify(label)); } catch (e) {}
@@ -2063,6 +2082,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
   document.getElementById("mapApplyBtn").addEventListener("click", applyMapping);
   document.getElementById("mapAiAssistBtn").addEventListener("click", aiAssistMapping);
+    document.getElementById("remapBtn").addEventListener("click", startRemap);
 
   // ---- Filters UI (nodes built with textContent; events via addEventListener — no inline handlers) ----
   function applyProductSearch() { // filter the checkbox list to whatever matches the search box
