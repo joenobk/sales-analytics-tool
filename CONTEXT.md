@@ -1,8 +1,11 @@
 # CONTEXT — Current Task
 
-## Status: COMPLETE — v7 shipped & verified in real Chrome over file://
+## Status: v6.01 shipped & verified in real Chrome over file:// (v7 work in progress)
 **Repo:** https://github.com/joenobk/sales-analytics-tool (branch `main`)
-**Run it:** open `index.html` directly in a browser, or `npx serve .`. No build step, no network needed. Header shows **"v7 (self-contained)"** with an orange star icon — if your copy doesn't show that tag/icon, you have the old file; re-download/hard-refresh.
+**Run it:** open `index.html` directly in a browser, or `npx serve .`. No build step, no network needed. Header shows **"v6.01 (self-contained)"** with an orange star icon — if your copy doesn't show that tag/icon, you have the old file; re-download/hard-refresh.
+
+## Versioning policy (user decision 2026-09-04)
+While v7 work is in progress, the header tag uses **v6.XX** increments of .01 per shipped change (currently v6.01). Only when ALL v7 phases are complete does the tag become **"v7 (self-contained)"**. Do not re-deliberate this scheme — bump to the next .01 for each new verified change.
 
 ## v3 features (session 4)
 Freeform AI question input · multi-select country filter · regression + moving-average trendline overlays on chart · select-all/deselect-all product buttons · orange five-point star favicon + in-app icon. All verified by extended real-Chrome e2e test.
