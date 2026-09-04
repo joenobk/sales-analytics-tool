@@ -64,4 +64,50 @@ console.log("missing-col error:", badParsed.errors[0]);
 const badDate = Core.parseCsvData(header, [["99999999","1","AT","5"],["20170817","1","AT","3"]]);
 if (badDate.rows.length !== 1 || !/skipped/i.test(badDate.errors[0])) { console.error("FAIL: invalid date handling"); process.exit(1); }
 
+// 9. Phase 0: all eight named modules present on the namespace
+for (const modName of ["Schema", "Store", "Metrics", "Charts", "Insight", "Text", "Report", "AI"]) {
+  if (!Core[modName] || typeof Core[modName] !== "object") { console.error(`FAIL: module ${modName} missing on SalesCore`); process.exit(1); }
+}
+console.log("modules present:", ["Schema","Store","Metrics","Charts","Insight","Text","Report","AI"].join(", "));
+
+// 10. Phase 0: HTML sanitizer strips script/style tags, on* attrs, javascript: URLs
+const dirty = '<script>alert(1)</script><div onclick="x()" style="color:red">ok</div><a href="javascript:void(0)">j</a><style>p{}</style>';
+const clean = Core.Text.sanitizeHtml(dirty);
+if (/<script/i.test(clean) || /<style/i.test(clean) || /onclick/i.test(clean) || /javascript:/i.test(clean)) { console.error("FAIL: sanitizer leaked dangerous markup:", clean); process.exit(1); }
+console.log("sanitizer output:", JSON.stringify(clean));
+
+// 11. Phase 0: escapeHtml escapes the five special characters
+const esc = Core.Text.escapeHtml('<a href="x">&\'</a>');
+if (esc !== "&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;") { console.error("FAIL: escapeHtml wrong:", esc); process.exit(1); }
+
+// 12. Phase 0: observable store get/set/subscribe
+const st = Core.Store.create({ a: 1 });
+let notified = null;
+st.subscribe(v => { notified = v; });
+st.set("a", 2);
+if (st.get("a") !== 2 || notified.a !== 2) { console.error("FAIL: store get/set/subscribe"); process.exit(1); }
+
+// 13. Phase 0: CSV builder emits the fixed header and sorts rows by date/article/country
+const mkRow = (d, a, c, u) => ({ date: new Date(d), articleId: a, countryCode: c, units: u });
+const csvRows = [mkRow("2017-08-18","9","SE",2), mkRow("2017-08-17","3448","AT",5)];
+const csvOut = Core.Report.buildCsvString(csvRows);
+if (!csvOut.startsWith("Date,Article_ID,Country_Code,Sold_Units\n")) { console.error("FAIL: buildCsvString header:", JSON.stringify(csvOut)); process.exit(1); }
+const csvLines = csvOut.split("\n");
+if (csvLines[1] !== "2017-08-17,3448,AT,5" || csvLines[2] !== "2017-08-18,9,SE,2") { console.error("FAIL: buildCsvString sort/content:", JSON.stringify(csvOut)); process.exit(1); }
+if (Core.Report.buildCsvString([]) !== "") { console.error("FAIL: buildCsvString empty"); process.exit(1); }
+
+// 14. Phase 0: AI context key is stable for identical inputs, changes when any input changes
+const k1 = Core.AI.filterKey(["P1"], ["SE"], "month", 1700000000000, 1800000000000);
+const k2 = Core.AI.filterKey(["P1"], ["SE"], "month", 1700000000000, 1800000000000);
+const k3 = Core.AI.filterKey(["P1"], ["FR"], "month", 1700000000000, 1800000000000);
+if (k1 !== k2 || k1 === k3) { console.error("FAIL: AI filterKey stability"); process.exit(1); }
+
+// 15. Phase 0: Charts.buildLineSpec returns a Chart.js-ready spec with regression + moving average
+const series = [{ label: "a", units: 1 }, { label: "b", units: 3 }, { label: "c", units: 2 }, { label: "d", units: 6 }];
+const spec = Core.Charts.buildLineSpec(series, { regression: true, movingAvg: true, maWindow: 2 });
+if (!Array.isArray(spec.labels) || spec.labels.length !== 4) { console.error("FAIL: buildLineSpec labels"); process.exit(1); }
+if (spec.datasets.length < 3) { console.error("FAIL: buildLineSpec datasets:", spec.datasets.length); process.exit(1); }
+const base = Core.Charts.buildLineSpec(series, {});
+if (base.datasets.length !== 1) { console.error("FAIL: buildLineSpec default should be single dataset"); process.exit(1); }
+
 console.log("\nALL CHECKS PASSED");
