@@ -6,8 +6,11 @@ const startMarker = html.indexOf("* SalesCore");
 const endMarker = html.indexOf("</script>", startMarker);
 if (startMarker === -1 || endMarker === -1) { console.error("FAIL: could not extract SalesCore script block"); process.exit(1); }
 let src = html.slice(html.lastIndexOf("<script>", startMarker), endMarker).replace(/^<script>/, "");
+// Stub localStorage so the Phase 1 mapping persistence code can run headless.
+const lsStore = {};
+const fakeLocalStorage = { getItem: k => (k in lsStore ? lsStore[k] : null), setItem: (k, v) => { lsStore[k] = String(v); }, removeItem: k => { delete lsStore[k]; } };
 const mod = { exports: {} };
-new Function("module", "window", src)(mod, {});
+new Function("module", "window", "localStorage", src)(mod, {}, fakeLocalStorage);
 const Core = mod.exports;
 
 // Minimal CSV reader (file is simple comma-separated)
@@ -109,5 +112,59 @@ if (!Array.isArray(spec.labels) || spec.labels.length !== 4) { console.error("FA
 if (spec.datasets.length < 3) { console.error("FAIL: buildLineSpec datasets:", spec.datasets.length); process.exit(1); }
 const base = Core.Charts.buildLineSpec(series, {});
 if (base.datasets.length !== 1) { console.error("FAIL: buildLineSpec default should be single dataset"); process.exit(1); }
+
+// 16. Phase 1: every supported date format parses correctly
+const fmtChecks = [
+  ["yyyymmdd", "20170817", [2017, 8, 17]],
+  ["iso", "2017-08-17T13:45:00", [2017, 8, 17]],
+  ["mdy", "08/17/2017", [2017, 8, 17]],
+  ["dmy", "17.08.2017", [2017, 8, 17]],
+  ["monyear", "Aug 2017", [2017, 8, 1]],
+  ["quarter", "2026-Q4", [2026, 10, 1]],
+  ["excel", "42964", [2017, 8, 17]] // Excel serial for 2017-08-17 (epoch 1899-12-30)
+];
+for (const [fmt, val, [y, m, d]] of fmtChecks) {
+  const dt = Core.parseDateByFormat(val, fmt);
+  if (!dt || dt.getFullYear() !== y || dt.getMonth() + 1 !== m || dt.getDate() !== d) { console.error(`FAIL: date format ${fmt} on "${val}"`); process.exit(1); }
+}
+// Invalid dates must not parse (e.g. Feb 30, month out of range)
+if (Core.parseDateByFormat("2017-02-30", "iso") || Core.parseDateByFormat("13/45/2017", "mdy")) { console.error("FAIL: invalid dates must not parse"); process.exit(1); }
+
+// 17. Phase 1: ID-shaped integer column is NOT classified as measure
+const idCol = Core.inferColumn("Article_ID", Array.from({ length: 200 }, (_, i) => String(3400 + i)));
+if (idCol.type !== "number" || idCol.role === "measure") { console.error(`FAIL: Article_ID classified as ${idCol.type}/${idCol.role}`); process.exit(1); }
+const unitsCol = Core.inferColumn("Sold_Units", ["3", "7", "0", "12", "5"]);
+if (unitsCol.type !== "number" || unitsCol.role !== "measure") { console.error(`FAIL: Sold_Units classified as ${unitsCol.type}/${unitsCol.role}`); process.exit(1); }
+
+// 18. Phase 1: currency string column parses to numbers
+const curChecks = [["$1,234.50", 1234.5], ["€999", 999], ["(1,000)", -1000], ["12%", 12]];
+for (const [s, n] of curChecks) { const v = Core.parseNumberValue(s); if (v !== n) { console.error(`FAIL: parseNumberValue("${s}") = ${v}, expected ${n}`); process.exit(1); } }
+if (Core.parseNumberValue("abc") !== null || Core.parseNumberValue("") !== null) { console.error("FAIL: non-numeric must stay null"); process.exit(1); }
+
+// 19. Phase 1: full inference on the real header shape + mapping round-trip through localStorage
+const inferred = Core.inferMapping(header, dataRows);
+const byName = Object.fromEntries(inferred.map(c => [c.name, c]));
+if (byName.Date.type !== "date" || byName.Date.role !== "time") { console.error("FAIL: Date inference", JSON.stringify(byName.Date)); process.exit(1); }
+if (byName.Article_ID.role === "measure") { console.error("FAIL: Article_ID must not be a measure"); process.exit(1); }
+if (byName.Sold_Units.type !== "number" || byName.Sold_Units.role !== "measure") { console.error("FAIL: Sold_Units inference", JSON.stringify(byName.Sold_Units)); process.exit(1); }
+console.log("inferred:", inferred.map(c => `${c.name}:${c.type}/${c.role}${c.format ? "(" + c.format + ")" : ""}`).join(", "));
+
+// Round-trip: save the confirmed mapping to localStorage, reload it, parse with it — must match legacy parse.
+const key = Core.mappingKey(header);
+lsStore["salesMapping:" + key] = JSON.stringify(inferred.map(c => ({ name: c.name, type: c.type, role: c.role, format: c.format })));
+const reloaded = JSON.parse(fakeLocalStorage.getItem("salesMapping:" + key));
+if (!reloaded || reloaded.length !== header.length) { console.error("FAIL: mapping round-trip through localStorage"); process.exit(1); }
+const mappedParsed = Core.parseWithMapping(header, dataRows, reloaded);
+if (mappedParsed.rows.length !== parsed.rows.length) { console.error(`FAIL: parseWithMapping rows ${mappedParsed.rows.length} != legacy ${parsed.rows.length}`); process.exit(1); }
+const mTotal = mappedParsed.rows.reduce((s, r) => s + r.units, 0);
+if (mTotal !== total) { console.error("FAIL: parseWithMapping total mismatch"); process.exit(1); }
+
+// mappingKey is order-insensitive and stable
+if (Core.mappingKey(header) !== Core.mappingKey([...header].reverse())) { console.error("FAIL: mappingKey must be order-insensitive"); process.exit(1); }
+if (Core.mappingKey(header) === Core.mappingKey(["Date", "Article_ID", "Country_Code", "Sold_Units", "Extra"])) { console.error("FAIL: mappingKey must differ for different shapes"); process.exit(1); }
+
+// parseWithMapping with a broken mapping reports errors instead of silently loading
+const bad = Core.parseWithMapping(header, dataRows, inferred.map(c => ({ ...c, role: c.role === "time" ? "ignore" : c.role })));
+if (bad.rows.length || !bad.errors.length) { console.error("FAIL: missing time column must produce errors"); process.exit(1); }
 
 console.log("\nALL CHECKS PASSED");

@@ -127,7 +127,7 @@ License: MIT
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.02 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.03 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
     <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
     <span id="dropLabel">Choose CSV (or drag &amp; drop)</span>
@@ -137,6 +137,17 @@ License: MIT
 </header>
 
 <div class="error-banner" id="errorBanner"></div>
+
+<div id="mappingPanel" class="card" style="display:none; margin: 24px auto; max-width: 980px;">
+  <h3 style="margin-top:0">Confirm column mapping</h3>
+  <p id="mappingMsg" style="font-size:.85rem;color:#6b7280"></p>
+  <div style="overflow-x:auto"><table id="mappingTable" style="width:100%;border-collapse:collapse;font-size:.85rem"></table></div>
+  <div class="row" style="margin-top:14px">
+    <button type="button" id="mapApplyBtn" style="background:#f97316;border-color:#f97316;color:#fff;font-weight:600">Apply &amp; Load</button>
+    <button type="button" id="mapAiAssistBtn">AI assist (propose roles)</button>
+    <span id="mapAiStatus" style="font-size:.8rem;color:#6b7280"></span>
+  </div>
+</div>
 
 <div class="layout">
   <aside class="sidebar">
@@ -284,6 +295,232 @@ License: MIT
     return { rows: rows, errors: errors };
   }
   Schema.parseCsvData = parseCsvData;
+
+  // ---- Phase 1: schema inference (column types + roles) ----
+  var TYPE_OPTIONS = ["date", "number", "boolean", "categorical", "identifier", "text", "empty"];
+  var ROLE_OPTIONS = ["time", "dimension", "measure", "identifier", "text", "geo", "ignore"];
+  Schema.TYPE_OPTIONS = TYPE_OPTIONS;
+  Schema.ROLE_OPTIONS = ROLE_OPTIONS;
+
+  // Strips currency symbols, thousands separators, %, spaces; (parens) = negative.
+  function parseNumberValue(v) {
+    var s = String(v == null ? "" : v).trim();
+    if (!s) return null;
+    var neg = false;
+    if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+    s = s.replace(/[^0-9.+-]/g, "");
+    if (!s || s === "-" || s === "+") return null;
+    if ((s.match(/\./g) || []).length > 1) return null; // "1.234,56"-style is out of scope
+    var n = parseFloat(s);
+    if (isNaN(n)) return null;
+    return neg ? -n : n;
+  }
+  Schema.parseNumberValue = parseNumberValue;
+
+  function validDate(y, m, d) {
+    var dt = new Date(y, m - 1, d);
+    return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d ? dt : null;
+  }
+
+  // Formats: yyyymmdd (20170817), iso (YYYY-MM-DD[THH:MM]), mdy/dmy (slash or dot, 2/4-digit year),
+  // monyear ("Aug 2017"), quarter ("2026-Q1" → first day of the quarter), excel serial (≥ 25569 ≈ 1970).
+  function parseDateByFormat(v, format) {
+    var s = String(v == null ? "" : v).trim();
+    if (!s) return null;
+    if (format === "yyyymmdd") return parseDateValue(s);
+    if (format === "iso") {
+      var m1 = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+      return m1 ? validDate(+m1[1], +m1[2], +m1[3]) : null;
+    }
+    if (format === "mdy" || format === "dmy") {
+      var m2 = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/.exec(s);
+      if (!m2) return null;
+      var a = +m2[1], b = +m2[2];
+      var y = +m2[3]; if (y < 100) y += 2000;
+      var mo = format === "mdy" ? a : b, da = format === "mdy" ? b : a;
+      return validDate(y, mo, da);
+    }
+    if (format === "monyear") {
+      var MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+      var m3 = /^([A-Za-z]{3,9})\s+(\d{4})$/.exec(s);
+      if (!m3) return null;
+      var t = m3[1].toLowerCase();
+      for (var mi = 0; mi < 12; mi++) {
+        if (MONTHS[mi].indexOf(t) === 0 || t.indexOf(MONTHS[mi].slice(0, 3)) === 0) return validDate(+m3[2], mi + 1, 1);
+      }
+      return null;
+    }
+    if (format === "quarter") {
+      var m4 = /^(\d{4})[-\s]?Q([1-4])$/i.exec(s);
+      return m4 ? validDate(+m4[1], (+m4[2] - 1) * 3 + 1, 1) : null;
+    }
+    if (format === "excel") {
+      var n = parseNumberValue(s);
+      // Conservative: only accept serials ≥ 25569 (≈ 1970-01-01) so plain small integers (units, counts) never become dates.
+      if (n == null || n < 25569 || n > 2958465) return null;
+      var u = new Date(Date.UTC(1899, 11, 30) + Math.round(n) * 86400000);
+      return validDate(u.getUTCFullYear(), u.getUTCMonth() + 1, u.getUTCDate());
+    }
+    return null;
+  }
+  Schema.parseDateByFormat = parseDateByFormat;
+
+  var GEO_RE = /country|region|territory|state|province|city|market|postal|\bzip\b|geo/i;
+  // "units" is deliberately NOT an ID pattern — Sold_Units must stay a measure.
+  var ID_NAME_RE = /(^|[^a-z])id([^a-z]|$)|number|code|\bsku\b|article|part.?no|material|account|customer|client|cust/i;
+  var MEASURE_RE = /amount|revenue|qty|quantity|units?|sold|spend|price|cost|margin|\btotal\b|value/i;
+
+  // Classifies one column from up to 1,000 non-empty sampled values.
+  function inferColumn(name, values) {
+    var sample = (values || []).filter(function (v) { return v != null && String(v).trim() !== ""; }).slice(0, 1000);
+    var n = sample.length;
+    var col = { name: name, type: "empty", role: "ignore", format: null, ambiguous: false };
+    if (!n) return col;
+
+    var distinct = {}, dCount = 0, meanLen = 0;
+    sample.forEach(function (v) {
+      var k = String(v).trim();
+      distinct[k] = (distinct[k] || 0) + 1;
+      meanLen += k.length;
+    });
+    dCount = Object.keys(distinct).length;
+    meanLen /= n;
+
+    function frac(fn) { var c = 0; for (var i = 0; i < n; i++) if (fn(sample[i])) c++; return c / n; }
+
+    // Date: ≥80% of samples must parse under one format.
+    var DATE_FORMATS = ["yyyymmdd", "iso", "monyear", "quarter"];
+    for (var fi = 0; fi < DATE_FORMATS.length; fi++) {
+      if (frac(function (v) { return !!parseDateByFormat(v, DATE_FORMATS[fi]); }) >= 0.8) { col.type = "date"; col.format = DATE_FORMATS[fi]; break; }
+    }
+    if (col.type !== "date") {
+      var mdyFrac = frac(function (v) { return !!parseDateByFormat(v, "mdy"); });
+      var dmyFrac = frac(function (v) { return !!parseDateByFormat(v, "dmy"); });
+      if (mdyFrac >= 0.8 && dmyFrac < 0.5) { col.type = "date"; col.format = "mdy"; }
+      else if (dmyFrac >= 0.8 && mdyFrac < 0.5) { col.type = "date"; col.format = "dmy"; }
+      else if (mdyFrac >= 0.8 || dmyFrac >= 0.8) { col.type = "date"; col.format = "mdy"; col.ambiguous = true; } // both orders parse — user must confirm in the panel
+    }
+    if (col.type !== "date" && frac(function (v) { return !!parseDateByFormat(v, "excel"); }) >= 0.95) { col.type = "date"; col.format = "excel"; }
+
+    // Boolean: word forms always; bare 1/0 only when the name suggests a flag.
+    if (col.type !== "date") {
+      var BOOL_WORDS = ["true", "false", "yes", "no", "won", "lost"];
+      var inBoolSet = frac(function (v) { return BOOL_WORDS.indexOf(String(v).trim().toLowerCase()) >= 0; });
+      var onlyZeroOne = frac(function (v) { return /^(1|0)$/i.test(String(v).trim()); }) === 1;
+      if (inBoolSet >= 0.9 || (onlyZeroOne && /flag|status|bool/i.test(name))) col.type = "boolean";
+    }
+
+    // Number: ≥95% parse after stripping symbols/separators/parens.
+    if (col.type !== "date" && col.type !== "boolean" && frac(function (v) { return parseNumberValue(v) != null; }) >= 0.95) col.type = "number";
+
+    // Text: long strings or near-unique readable strings.
+    if (col.type === "empty") {
+      if (meanLen > 80 || (dCount / n > 0.9 && meanLen > 15)) col.type = "text";
+      else if (dCount / n >= 0.85) col.type = "identifier";
+      else if (dCount < Math.max(2, n * 0.05) || dCount < 50) col.type = "categorical";
+      else col.type = dCount <= n / 2 ? "categorical" : "identifier";
+    }
+    col.role = assignRole(name, col); // role always derived from the final type + name patterns
+    return col;
+  }
+  Schema.inferColumn = inferColumn;
+
+  // Role from type + name patterns. Numeric identifiers are never measures; ambiguous numerics default to dimension.
+  function assignRole(name, col) {
+    var nm = String(name || "");
+    if (col.type === "date") return "time";
+    if (col.type === "text") return "text";
+    if (col.type === "boolean") return "dimension";
+    if (col.type === "number") {
+      if (ID_NAME_RE.test(nm)) return "identifier";
+      if (MEASURE_RE.test(nm)) return "measure";
+      return "dimension";
+    }
+    // categorical / identifier types
+    if (GEO_RE.test(nm)) return "geo";
+    if (col.type === "identifier") return "identifier";
+    if (ID_NAME_RE.test(nm)) return "identifier"; // low-cardinality ID-like column, e.g. Article_ID
+    return "dimension";
+  }
+  Schema.assignRole = assignRole;
+
+  // Full per-column inference: type, role, detected date format, samples, null + distinct counts.
+  function inferMapping(header, dataRows) {
+    var fields = header || [];
+    return fields.map(function (name, i) {
+      var values = (dataRows || []).map(function (r) { return r ? r[i] : null; });
+      var col = inferColumn(name, values);
+      col.role = assignRole(name, col);
+      var nonEmpty = values.filter(function (v) { return v != null && String(v).trim() !== ""; });
+      col.nullCount = values.length - nonEmpty.length;
+      col.distinctCount = Object.keys(nonEmpty.reduce(function (acc, v) { var k = String(v).trim(); acc[k] = (acc[k] || 0) + 1; return acc; }, {})).length;
+      col.samples = nonEmpty.slice(0, 5).map(String);
+      return col;
+    });
+  }
+  Schema.inferMapping = inferMapping;
+
+  // Stable key for a header shape (order-insensitive) — used to persist confirmed mappings.
+  function mappingKey(header) {
+    var norm = (header || []).map(normalizeHeader).sort();
+    var h = 0x811c9dc5;
+    for (var i = 0; i < norm.length; i++) {
+      for (var j = 0; j < norm[i].length; j++) { h ^= norm[i].charCodeAt(j); h = (h * 0x01000193) >>> 0; }
+      h = ((h ^ 42) * 0x01000193) >>> 0; // separator between header names
+    }
+    return "m" + h.toString(16);
+  }
+  Schema.mappingKey = mappingKey;
+
+  // Parses rows using a CONFIRMED mapping (roles, not hard-coded header names).
+  // Produces the same row shape as parseCsvData: {date, articleId, countryCode, units}.
+  function parseWithMapping(header, dataRows, mapping) {
+    var idx = {};
+    (header || []).forEach(function (h, i) { idx[normalizeHeader(h)] = i; });
+    var cols = (mapping || []).map(function (c) { return Object.assign({}, c); });
+    function findCol(pred) { for (var i = 0; i < cols.length; i++) if (pred(cols[i])) return cols[i]; return null; }
+
+    var timeCol = findCol(function (c) { return c.role === "time"; });
+    var unitsCol = findCol(function (c) { return c.role === "measure"; });
+    var countryCol = findCol(function (c) { return c.role === "geo" || (c.role === "dimension" && GEO_RE.test(c.name)); });
+    var productCol = findCol(function (c) {
+      if (c === timeCol || c === unitsCol || c === countryCol) return false;
+      return c.role === "identifier" && /product|article|\bsku\b|item|part/i.test(c.name);
+    }) || findCol(function (c) {
+      if (c === timeCol || c === unitsCol || c === countryCol) return false;
+      return c.role === "identifier" || (c.role === "dimension" && ID_NAME_RE.test(c.name));
+    });
+
+    var errors = [];
+    if (!timeCol) errors.push("No column mapped to role 'time' — pick a date column in the mapping panel.");
+    if (!unitsCol) errors.push("No column mapped to role 'measure' — pick the numeric quantity/amount column.");
+    if (!productCol) errors.push("No column mapped to an identifier/dimension that looks like a product (Article/SKU/item).");
+    if (!countryCol) errors.push("No column mapped to role 'geo' or a country-like dimension.");
+    if (errors.length) return { rows: [], errors: errors };
+
+    var timeIdx = idx[normalizeHeader(timeCol.name)];
+    var unitsIdx = idx[normalizeHeader(unitsCol.name)];
+    var productIdx = idx[normalizeHeader(productCol.name)];
+    var countryIdx = idx[normalizeHeader(countryCol.name)];
+    var rows = [], badDates = 0, badUnits = 0;
+    (dataRows || []).forEach(function (r) {
+      if (!r || r.length === 0) return;
+      var date = parseDateByFormat(r[timeIdx], timeCol.format || "yyyymmdd");
+      if (!date) { badDates++; return; }
+      var units = parseNumberValue(r[unitsIdx]);
+      if (units == null) { badUnits++; return; }
+      rows.push({
+        date: date,
+        articleId: String(r[productIdx] == null ? "" : r[productIdx]).trim(),
+        countryCode: String(r[countryIdx] == null ? "" : r[countryIdx]).trim().toUpperCase(),
+        units: units
+      });
+    });
+    if (badDates) errors.push(badDates + " row(s) skipped due to invalid date values in '" + timeCol.name + "'.");
+    if (badUnits) errors.push(badUnits + " row(s) skipped due to non-numeric values in '" + unitsCol.name + "'.");
+    return { rows: rows, errors: errors };
+  }
+  Schema.parseWithMapping = parseWithMapping;
 
   // ---- Store module (light observable state container) ----
   var Store = {};
@@ -570,6 +807,16 @@ License: MIT
   api.buildAiPrompt = buildAiPrompt;
   api.buildFullDataPayload = buildFullDataPayload;
   api.buildStatisticalFallback = buildStatisticalFallback;
+  // Phase 1 schema inference aliases
+  api.TYPE_OPTIONS = TYPE_OPTIONS;
+  api.ROLE_OPTIONS = ROLE_OPTIONS;
+  api.parseNumberValue = parseNumberValue;
+  api.parseDateByFormat = parseDateByFormat;
+  api.inferColumn = inferColumn;
+  api.assignRole = assignRole;
+  api.inferMapping = inferMapping;
+  api.mappingKey = mappingKey;
+  api.parseWithMapping = parseWithMapping;
 
   if (typeof module !== "undefined" && module.exports) module.exports = api; // Node tests
   window.SalesCore = api;
@@ -613,33 +860,146 @@ License: MIT
   // ---- Errors / status ----
   function showError(msg) { var el = document.getElementById("errorBanner"); el.textContent = msg || ""; el.style.display = msg ? "block" : "none"; }
 
-  // ---- File loading ----
+  // ---- File loading with Phase 1 mapping confirmation (nothing loads silently on a guess) ----
+  var MAPPING_LS_PREFIX = "salesMapping:";
+  var pendingFile = null; // { fields, rowsArr } awaiting user confirmation
+
+  function loadStoredMapping(key) {
+    try { return JSON.parse(localStorage.getItem(MAPPING_LS_PREFIX + key)); } catch (e) { return null; }
+  }
+  function saveStoredMapping(key, mapping) {
+    try { localStorage.setItem(MAPPING_LS_PREFIX + key, JSON.stringify(mapping.map(function (c) { return { name: c.name, type: c.type, role: c.role, format: c.format }; }))); } catch (e) {}
+  }
+
+  function commitLoaded(rows, warnings) {
+    store.update({
+      allRows: rows,
+      products: Array.from(new Set(rows.map(function (r) { return r.articleId; }))).sort(),
+      countries: Array.from(new Set(rows.map(function (r) { return r.countryCode; }))).sort()
+    });
+    showError((warnings || []).join(" "));
+    document.getElementById("rowCount").textContent = rows.length.toLocaleString() + " valid rows";
+    buildFilters();
+    syncChecklistState(); // seed selectedProducts/selectedCountries in the store
+    renderAll();
+  }
+
   function handleFile(file) {
     if (!file) return;
+    fileInput.value = "";
+    showError("");
     Papa.parse(file, {
       header: true, skipEmptyLines: true, dynamicTyping: false,
       complete: function (res) {
         try {
-        // Papa with header:true gives res.data as array of objects; re-derive positional rows.
-        var fields = res.meta.fields;
-        var rowsArr = res.data.map(function (o) { return fields.map(function (f) { return o[f]; }); });
-        var parsed = Core.parseCsvData(fields, rowsArr);
-        if (!parsed.rows.length && !parsed.errors.length) { showError("No valid data rows found in CSV."); return; }
-        store.update({
-          allRows: parsed.rows,
-          products: Array.from(new Set(parsed.rows.map(function (r) { return r.articleId; }))).sort(),
-          countries: Array.from(new Set(parsed.rows.map(function (r) { return r.countryCode; }))).sort()
-        });
-        showError(parsed.errors.join(" ")); // warnings only if rows exist
-        document.getElementById("rowCount").textContent = parsed.rows.length.toLocaleString() + " valid rows";
-        buildFilters();
-        syncChecklistState(); // seed selectedProducts/selectedCountries in the store
-        renderAll();
+          // Papa with header:true gives res.data as array of objects; re-derive positional rows.
+          var fields = res.meta.fields.map(function (f) { return String(f).trim(); });
+          if (!fields.length || !res.data.length) { showError("No data rows found in the file."); return; }
+          var rowsArr = res.data.map(function (o) { return fields.map(function (f) { return o[f]; }); });
+          pendingFile = { fields: fields, rowsArr: rowsArr };
+
+          // A previously CONFIRMED mapping for this header shape applies instantly.
+          var key = Core.mappingKey(fields);
+          var stored = loadStoredMapping(key);
+          if (stored && stored.length === fields.length) {
+            var parsed = Core.parseWithMapping(fields, rowsArr, stored);
+            if (parsed.rows.length) { pendingFile = null; commitLoaded(parsed.rows, parsed.errors); return; }
+          }
+          showMappingPanel();
         } catch (e) { showError("Unexpected error while loading CSV: " + e.message); console.error(e); }
       },
       error: function (err) { showError("Failed to parse CSV: " + err.message); }
     });
   }
+
+  var panelCols = []; // live column objects for the open panel (edits land here)
+
+  function showMappingPanel() {
+    if (!pendingFile) return;
+    panelCols = Core.inferMapping(pendingFile.fields, pendingFile.rowsArr);
+    renderMappingTable();
+    document.getElementById("mappingMsg").textContent = "Inferred types and roles for " + panelCols.length + " columns. Review the mapping — nothing loads until you confirm.";
+    document.getElementById("mapAiStatus").textContent = "";
+    document.getElementById("mappingPanel").style.display = "block";
+  }
+
+  function renderMappingTable() {
+    var table = document.getElementById("mappingTable");
+    table.innerHTML = "";
+    var head = document.createElement("tr");
+    ["Column", "Type (inferred)", "Role", "Samples", "Nulls", "Distinct"].forEach(function (t) {
+      var th = document.createElement("th"); th.textContent = t; th.style.cssText = "text-align:left;border-bottom:1px solid #e5e7eb;padding:6px 8px"; head.appendChild(th);
+    });
+    table.appendChild(head);
+    panelCols.forEach(function (col) {
+      var tr = document.createElement("tr");
+      function cell(text) { var td = document.createElement("td"); td.textContent = text; td.style.cssText = "padding:6px 8px;border-bottom:1px solid #f3f4f6"; return td; }
+      tr.appendChild(cell(col.name));
+      var typeTd = document.createElement("td"); typeTd.style.cssText = "padding:6px 8px;border-bottom:1px solid #f3f4f6";
+      var typeSel = document.createElement("select");
+      Core.TYPE_OPTIONS.forEach(function (t) { var o = document.createElement("option"); o.value = t; o.textContent = t + (col.type === t ? " ✓" : ""); if (t === col.type) o.selected = true; typeSel.appendChild(o); });
+      typeSel.addEventListener("change", function () {
+        col.type = this.value; col.format = null; col.role = Core.assignRole(col.name, col); renderMappingTable();
+      });
+      typeTd.appendChild(typeSel);
+      if (col.format) { var fmt = document.createElement("span"); fmt.textContent = " (" + col.format + ")"; fmt.style.color = "#6b7280"; typeTd.appendChild(fmt); }
+      tr.appendChild(typeTd);
+      var roleTd = document.createElement("td"); roleTd.style.cssText = "padding:6px 8px;border-bottom:1px solid #f3f4f6";
+      var roleSel = document.createElement("select");
+      Core.ROLE_OPTIONS.forEach(function (r) { var o = document.createElement("option"); o.value = r; o.textContent = r; if (r === col.role) o.selected = true; roleSel.appendChild(o); });
+      roleSel.addEventListener("change", function () { col.role = this.value; });
+      roleTd.appendChild(roleSel); tr.appendChild(roleTd);
+      tr.appendChild(cell(col.samples.join(", ")));
+      tr.appendChild(cell(String(col.nullCount)));
+      tr.appendChild(cell(String(col.distinctCount)));
+      table.appendChild(tr);
+    });
+  }
+
+  function applyMapping() {
+    if (!pendingFile) return;
+    var parsed = Core.parseWithMapping(pendingFile.fields, pendingFile.rowsArr, panelCols);
+    if (!parsed.rows.length) { document.getElementById("mappingMsg").textContent = (parsed.errors && parsed.errors.length ? parsed.errors : ["Could not parse any rows with this mapping."]).join(" "); return; }
+    saveStoredMapping(Core.mappingKey(pendingFile.fields), panelCols);
+    pendingFile = null;
+    document.getElementById("mappingPanel").style.display = "none";
+    commitLoaded(parsed.rows, parsed.errors);
+  }
+
+  function aiAssistMapping() {
+    var statusEl = document.getElementById("mapAiStatus");
+    var cfg = loadCfg();
+    if (!cfg.baseUrl || !cfg.apiKey || !cfg.model) { statusEl.textContent = "Set the AI settings (base URL, key, model) first."; return; }
+    statusEl.textContent = "Asking the model to propose roles…";
+    // Only headers + inferred types + 5 sample values leave the browser — never full data.
+    var payload = panelCols.map(function (c) { return { header: c.name, inferredType: c.type, samples: c.samples }; });
+    fetch(cfg.baseUrl.replace(/\/+$/, "") + "/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + cfg.apiKey },
+      body: JSON.stringify({
+        model: cfg.model, temperature: 0.1, max_tokens: 600,
+        messages: [
+          { role: "system", content: "You label CSV columns for a sales analytics tool. Reply with ONLY minified JSON: {\"roles\":{\"<header>\":\"time|dimension|measure|identifier|text|geo|ignore\"},\"datasetKind\":\"one line\",\"description\":\"one line\"}. Label every header exactly as given; never invent, rename or transform values." },
+          { role: "user", content: "Columns (with inferred types and up to 5 sample values each):\n" + JSON.stringify(payload) }
+        ]
+      })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      var txt = (j.choices && j.choices[0] && j.choices[0].message ? j.choices[0].message.content : "") || "";
+      var m = /\{[\s\S]*\}/.exec(txt);
+      if (!m) throw new Error("no JSON in response");
+      var proposal = JSON.parse(m[0]);
+      var applied = 0;
+      panelCols.forEach(function (c) {
+        var r = proposal.roles && proposal.roles[c.name];
+        if (Core.ROLE_OPTIONS.indexOf(r) >= 0) { c.role = r; applied++; }
+      });
+      renderMappingTable();
+      statusEl.textContent = "Proposed roles for " + applied + "/" + panelCols.length + " columns" + (proposal.description ? " — " + proposal.description : "") + ". Review, then click Apply & Load.";
+    }).catch(function (e) { statusEl.textContent = "AI assist failed: " + e.message; });
+  }
+
+  document.getElementById("mapApplyBtn").addEventListener("click", applyMapping);
+  document.getElementById("mapAiAssistBtn").addEventListener("click", aiAssistMapping);
 
   // ---- Filters UI (nodes built with textContent; events via addEventListener — no inline handlers) ----
   function buildFilters() {
