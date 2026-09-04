@@ -127,7 +127,7 @@ License: MIT
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.01 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.02 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
     <input type="file" id="fileInput" accept=".csv,text/csv" hidden>
     <span id="dropLabel">Choose CSV (or drag &amp; drop)</span>
@@ -230,11 +230,16 @@ License: MIT
 <script>
 /* ============================================================
  * SalesCore — pure, DOM-free logic (unit-testable in Node)
+ * Modules: Schema, Store, Metrics, Charts, Insight, Text, Report, AI
  * ============================================================ */
 (function () {
   "use strict";
 
+  // ---- Schema module (parsing + validation) ----
+  var Schema = {};
+
   function normalizeHeader(h) { return String(h == null ? "" : h).replace(/[^a-z0-9]/gi, "").toLowerCase(); }
+  Schema.normalizeHeader = normalizeHeader;
 
   // Accepts a YYYYMMDD integer or string; returns Date at local midnight, or null if invalid.
   function parseDateValue(v) {
@@ -248,6 +253,7 @@ License: MIT
     if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
     return dt;
   }
+  Schema.parseDateValue = parseDateValue;
 
   // Validates headers + rows. Returns {rows:[{date, articleId, countryCode, units}], errors:[]}
   function parseCsvData(header, dataRows) {
@@ -277,28 +283,47 @@ License: MIT
     if (badUnits) errors.push(badUnits + " row(s) skipped due to non-numeric Sold_Units.");
     return { rows: rows, errors: errors };
   }
+  Schema.parseCsvData = parseCsvData;
 
-  function startOfWeek(d) { // Monday-based week start
+  // ---- Store module (light observable state container) ----
+  var Store = {};
+  Store.create = function (initial) {
+    var state = Object.assign({}, initial || {});
+    var listeners = [];
+    return {
+      get: function (key) { return key ? state[key] : Object.assign({}, state); },
+      set: function (key, value) { state[key] = value; for (var i = 0; i < listeners.length; i++) listeners[i](state); },
+      update: function (partial) { Object.assign(state, partial); for (var i = 0; i < listeners.length; i++) listeners[i](state); },
+      subscribe: function (fn) { listeners.push(fn); return function () { var idx = listeners.indexOf(fn); if (idx >= 0) listeners.splice(idx, 1); }; }
+    };
+  };
+
+  // ---- Metrics module (aggregation + statistics) ----
+  var Metrics = {};
+
+  function startOfWeek(d) {
     var dt = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    var dow = (dt.getDay() + 6) % 7; // Mon=0..Sun=6
+    var dow = (dt.getDay() + 6) % 7;
     dt.setDate(dt.getDate() - dow);
     return dt;
   }
+  Metrics.startOfWeek = startOfWeek;
 
-  function bucketFor(date, mode) { // -> {key, t} where t is a sortable epoch ms
+  function bucketFor(date, mode) {
     var y = date.getFullYear(), m = String(date.getMonth() + 1).padStart(2, "0");
     if (mode === "week") { var w = startOfWeek(date); return { key: String(w.getTime()), t: w.getTime() }; }
     if (mode === "month") return { key: y + "-" + m, t: new Date(y, date.getMonth(), 1).getTime() };
     return { key: y + "-" + m + "-" + String(date.getDate()).padStart(2, "0"), t: date.getTime() };
   }
+  Metrics.bucketFor = bucketFor;
 
   function bucketLabel(key, mode) {
     if (mode === "month") { var p = key.split("-"); return new Date(+p[0], +p[1] - 1, 1).toLocaleDateString(undefined, { month: "short", year: "numeric" }); }
     if (mode === "week") return "Wk of " + new Date(parseInt(key, 10)).toLocaleDateString(undefined, { month: "short", day: "numeric" });
     var p2 = key.split("-"); return new Date(+p2[0], +p2[1] - 1, +p2[2]).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   }
+  Metrics.bucketLabel = bucketLabel;
 
-  // rows -> [{key,label,t,units}] sorted by time
   function aggregate(rows, mode) {
     var map = new Map();
     rows.forEach(function (r) {
@@ -309,6 +334,7 @@ License: MIT
     return Array.from(map.entries()).sort(function (a, b) { return a[1].t - b[1].t; })
       .map(function (e) { return { key: e[0], t: e[1].t, label: bucketLabel(e[0], mode), units: e[1].units }; });
   }
+  Metrics.aggregate = aggregate;
 
   function linearRegressionSlope(values) {
     var n = values.length;
@@ -317,6 +343,7 @@ License: MIT
     for (var i = 0; i < n; i++) { sx += i; sy += values[i]; sxy += i * values[i]; sxx += i * i; }
     return (n * sxy - sx * sy) / (n * sxx - sx * sx || 1);
   }
+  Metrics.linearRegressionSlope = linearRegressionSlope;
 
   function median(values) {
     if (!values.length) return 0;
@@ -324,8 +351,8 @@ License: MIT
     var mid = Math.floor(s.length / 2);
     return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
   }
+  Metrics.median = median;
 
-  // Least-squares line through the series values -> [yAtFirst, yAtLast].
   function linearTrendLine(values) {
     var n = values.length;
     if (n < 2) return null;
@@ -336,8 +363,8 @@ License: MIT
     var intercept = (sy - slope * sx) / n;
     return [intercept, intercept + slope * (n - 1)];
   }
+  Metrics.linearTrendLine = linearTrendLine;
 
-  // Centered moving average -> array of same length with nulls at the edges.
   function movingAverage(values, windowSize) {
     var w = Math.max(2, Math.floor(windowSize));
     return values.map(function (_, i) {
@@ -348,11 +375,11 @@ License: MIT
       return sum / w;
     });
   }
+  Metrics.movingAverage = movingAverage;
 
-  // Full stats for the filtered rows.
   function computeStats(rows, aggMode) {
     var total = 0, byProduct = {}, byCountry = {};
-    var monthOfYear = {}; // m -> {sum, days:Set}
+    var monthOfYear = {};
     var dates = [];
     rows.forEach(function (r) {
       total += r.units;
@@ -369,7 +396,6 @@ License: MIT
     var meanPerBucket = total / Math.max(1, series.length);
     var trendPct = meanPerBucket ? slope / meanPerBucket : 0;
 
-    // Seasonality: avg units per day by calendar month vs overall daily average.
     var allDays = new Set(dates.map(function (d) { return d.getTime(); }));
     var overallDailyAvg = total / Math.max(1, allDays.size);
     var season = Object.keys(monthOfYear).map(function (m) {
@@ -401,8 +427,28 @@ License: MIT
       growthPct: series.length >= 2 && series[0].units ? ((series[series.length - 1].units - series[0].units) / series[0].units) : null
     };
   }
+  Metrics.computeStats = computeStats;
 
-  // Compact text summary sent to the LLM (never raw CSV).
+  // ---- Charts module (chart spec builders — no DOM/Chart.js needed) ----
+  var Charts = {};
+
+  function buildLineSpec(series, opts) {
+    var values = series.map(function (b) { return b.units; });
+    var datasets = [{ label: "Units sold", data: values, borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,.15)", fill: true, pointRadius: 0, borderWidth: 1.5, tension: .2 }];
+    if (opts && opts.regression) {
+      var tl = Metrics.linearTrendLine(values);
+      if (tl) datasets.push({ label: "Regression line", data: values.map(function (_, i) { return tl[0] + (tl[1] - tl[0]) * (values.length > 1 ? i / (values.length - 1) : 0); }), borderColor: "#f87171", pointRadius: 0, borderWidth: 2, borderDash: [6, 4], fill: false });
+    }
+    if (opts && opts.movingAvg && opts.maWindow) {
+      datasets.push({ label: "Moving average (" + opts.maWindow + ")", data: Metrics.movingAverage(values, opts.maWindow), borderColor: "#fbbf24", pointRadius: 0, borderWidth: 2, tension: .3, fill: false });
+    }
+    return { labels: series.map(function (b) { return b.label; }), datasets: datasets };
+  }
+  Charts.buildLineSpec = buildLineSpec;
+
+  // ---- Insight module (AI prompt + statistical fallback) ----
+  var Insight = {};
+
   function buildAiPrompt(stats, aggMode) {
     var unit = aggMode === "day" ? "day" : aggMode;
     return [
@@ -419,8 +465,8 @@ License: MIT
       "Provide concise, actionable insights on performance, concentration risk, and seasonality."
     ].join("\n");
   }
+  Insight.buildAiPrompt = buildAiPrompt;
 
-  // Fallback statistical summary (no API).
   function buildStatisticalFallback(stats) {
     var lines = [
       "STATISTICAL SUMMARY (no AI API configured or request failed)",
@@ -435,13 +481,11 @@ License: MIT
     lines.push("- By country: " + stats.byCountry.map(function (c) { return c[0] + " (" + c[1] + ")"; }).join(", "));
     return lines.join("\n");
   }
+  Insight.buildStatisticalFallback = buildStatisticalFallback;
 
-  // Full filtered dataset at month x product x country grain (nonzero cells only).
-  // Gives the LLM complete visibility so it can derive any cut (per-product monthly,
-  // per-country monthly, mix shifts, etc.) without us re-sending data.
   function buildFullDataPayload(rows) {
     if (!rows.length) return "";
-    var cube = {};            // "ym|prod|ctry" -> units
+    var cube = {};
     var totalByProd = {}, totalByCtry = {}, grandTotal = 0;
     rows.forEach(function (r) {
       var ym = r.date.getFullYear() + "-" + String(r.date.getMonth() + 1).padStart(2, "0");
@@ -467,8 +511,66 @@ License: MIT
     cells.forEach(function (c) { lines.push("| " + c.ym + " | " + c.prod + " | " + c.ctry + " | " + c.units + " |"); });
     return lines.join("\n");
   }
+  Insight.buildFullDataPayload = buildFullDataPayload;
 
-  var api = { normalizeHeader, parseDateValue, parseCsvData, startOfWeek, aggregate, linearRegressionSlope, median, linearTrendLine, movingAverage, computeStats, buildAiPrompt, buildFullDataPayload, buildStatisticalFallback };
+  // ---- Text module (escaping + HTML sanitization) ----
+  var Text = {};
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  Text.escapeHtml = escapeHtml;
+
+  // Small HTML sanitizer: strips script/style tags, event-handler attributes, and javascript: URLs.
+  function sanitizeHtml(html) {
+    var s = String(html);
+    s = s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+    s = s.replace(/<\/script\s*>/gi, "");
+    s = s.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
+    s = s.replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+    s = s.replace(/(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '$1="#"');
+    return s;
+  }
+  Text.sanitizeHtml = sanitizeHtml;
+
+  // ---- Report module (CSV export string builder) ----
+  var Report = {};
+
+  function buildCsvString(rows) {
+    if (!rows.length) return "";
+    var lines = ["Date,Article_ID,Country_Code,Sold_Units"];
+    rows.slice().sort(function (a, b) { return a.date - b.date || String(a.articleId).localeCompare(String(b.articleId)) || a.countryCode.localeCompare(b.countryCode); })
+      .forEach(function (r) { lines.push(r.date.toISOString().slice(0, 10) + "," + r.articleId + "," + r.countryCode + "," + r.units); });
+    return lines.join("\n");
+  }
+  Report.buildCsvString = buildCsvString;
+
+  // ---- AI module (context key + helpers) ----
+  var AI = {};
+
+  function filterKey(products, countries, aggMode, dateFromMs, dateToMs) {
+    var s = function (a) { return a.slice().sort(); };
+    return JSON.stringify({ p: s(products), c: s(countries), a: aggMode, d: [dateFromMs, dateToMs] });
+  }
+  AI.filterKey = filterKey;
+
+  // ---- Export all modules + legacy aliases on the core namespace ----
+  var api = { Schema: Schema, Store: Store, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI };
+  // Legacy top-level aliases (backward compat with existing tests)
+  api.normalizeHeader = normalizeHeader;
+  api.parseDateValue = parseDateValue;
+  api.parseCsvData = parseCsvData;
+  api.startOfWeek = startOfWeek;
+  api.aggregate = aggregate;
+  api.linearRegressionSlope = linearRegressionSlope;
+  api.median = median;
+  api.linearTrendLine = linearTrendLine;
+  api.movingAverage = movingAverage;
+  api.computeStats = computeStats;
+  api.buildAiPrompt = buildAiPrompt;
+  api.buildFullDataPayload = buildFullDataPayload;
+  api.buildStatisticalFallback = buildStatisticalFallback;
+
   if (typeof module !== "undefined" && module.exports) module.exports = api; // Node tests
   window.SalesCore = api;
 })();
@@ -481,8 +583,17 @@ License: MIT
 (function () {
   "use strict";
   var Core = window.SalesCore;
-  var state = { allRows: [], products: [], countries: [], aggMode: "day", chart: null };
+  // Single observable state container (Phase 0): filters, datasets, chart spec inputs and AI context
+  // live here instead of being read back out of the DOM.
+  var store = Core.Store.create({ allRows: [], products: [], countries: [], selectedProducts: [], selectedCountries: [], aggMode: "day", dateFromMs: null, dateToMs: null, aiCtx: null });
+  var state = { chart: null }; // live Chart.js instance (not serializable state)
   var LS_KEY = "salesAIConfig";
+
+  function readDateRange() { // -> [fromMs|null, toMsExclusive|null] from the sidebar date inputs
+    var f = document.getElementById("dateFrom").value;
+    var t = document.getElementById("dateTo").value;
+    return [f ? new Date(f + "T00:00:00").getTime() : null, t ? new Date(t + "T23:59:59.999").getTime() : null];
+  }
 
   // ---- Settings persistence (localStorage) ----
   function loadCfg() {
@@ -514,12 +625,15 @@ License: MIT
         var rowsArr = res.data.map(function (o) { return fields.map(function (f) { return o[f]; }); });
         var parsed = Core.parseCsvData(fields, rowsArr);
         if (!parsed.rows.length && !parsed.errors.length) { showError("No valid data rows found in CSV."); return; }
-        state.allRows = parsed.rows;
-        state.products = Array.from(new Set(parsed.rows.map(function (r) { return r.articleId; }))).sort();
-        state.countries = Array.from(new Set(parsed.rows.map(function (r) { return r.countryCode; }))).sort();
+        store.update({
+          allRows: parsed.rows,
+          products: Array.from(new Set(parsed.rows.map(function (r) { return r.articleId; }))).sort(),
+          countries: Array.from(new Set(parsed.rows.map(function (r) { return r.countryCode; }))).sort()
+        });
         showError(parsed.errors.join(" ")); // warnings only if rows exist
         document.getElementById("rowCount").textContent = parsed.rows.length.toLocaleString() + " valid rows";
         buildFilters();
+        syncChecklistState(); // seed selectedProducts/selectedCountries in the store
         renderAll();
         } catch (e) { showError("Unexpected error while loading CSV: " + e.message); console.error(e); }
       },
@@ -527,40 +641,56 @@ License: MIT
     });
   }
 
-  // ---- Filters UI ----
+  // ---- Filters UI (nodes built with textContent; events via addEventListener — no inline handlers) ----
   function buildFilters() {
     var pl = document.getElementById("productList");
     pl.innerHTML = "";
-    state.products.forEach(function (p) {
-      var id = "prod_" + p;
-      pl.insertAdjacentHTML("beforeend", '<label><input type="checkbox" value="' + p + '" checked onchange="App.onFilterChange()"> ' + p + "</label>");
+    store.get("products").forEach(function (p) {
+      var label = document.createElement("label");
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = p;
+      cb.checked = true;
+      cb.dataset.kind = "product";
+      cb.addEventListener("change", onFilterChange);
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(" " + p));
+      pl.appendChild(label);
     });
     var cl = document.getElementById("countryChecklist");
     cl.innerHTML = "";
-    state.countries.forEach(function (c) {
-      cl.insertAdjacentHTML("beforeend", '<label><input type="checkbox" value="' + c + '" checked onchange="App.onFilterChange()"> ' + c + "</label>");
+    store.get("countries").forEach(function (c) {
+      var label = document.createElement("label");
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = c;
+      cb.checked = true;
+      cb.dataset.kind = "country";
+      cb.addEventListener("change", onFilterChange);
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(" " + c));
+      cl.appendChild(label);
     });
   }
 
-  function selectedProducts() {
-    return Array.from(document.querySelectorAll("#productList input:checked")).map(function (i) { return i.value; });
+  function syncChecklistState() { // mirror checkbox state into the store (single source of truth)
+    var prods = [], ctrys = [];
+    document.querySelectorAll("#productList input").forEach(function (i) { if (i.checked) prods.push(i.value); });
+    document.querySelectorAll("#countryChecklist input").forEach(function (i) { if (i.checked) ctrys.push(i.value); });
+    store.update({ selectedProducts: prods, selectedCountries: ctrys });
   }
-  function selectedCountries() {
-    return Array.from(document.querySelectorAll("#countryChecklist input:checked")).map(function (i) { return i.value; });
-  }
-  function dateRange() { // -> [fromMs|null, toMsExclusive|null] from the sidebar date inputs
-    var f = document.getElementById("dateFrom").value;
-    var t = document.getElementById("dateTo").value;
-    var fromMs = f ? new Date(f + "T00:00:00").getTime() : null;
-    var toMs = t ? new Date(t + "T23:59:59.999").getTime() : null;
-    return [fromMs, toMs];
+
+  function onFilterChange() { syncChecklistState(); renderAll(); }
+
+  function dateRange() { // -> [fromMs|null, toMsExclusive|null] from the store (mirrored off the inputs)
+    return [store.get("dateFromMs"), store.get("dateToMs")];
   }
 
   function filteredRows() {
-    var prods = new Set(selectedProducts());
-    var countries = new Set(selectedCountries());
+    var prods = new Set(store.get("selectedProducts"));
+    var countries = new Set(store.get("selectedCountries"));
     var range = dateRange();
-    return state.allRows.filter(function (r) {
+    return store.get("allRows").filter(function (r) {
       if (!prods.has(r.articleId) || !countries.has(r.countryCode)) return false;
       var t = r.date.getTime();
       if (range[0] != null && t < range[0]) return false;
@@ -573,10 +703,8 @@ License: MIT
   function exportCsv() {
     var rows = filteredRows();
     if (!rows.length) { showError("Nothing to export — no data in the current filter view."); return; }
-    var lines = ["Date,Article_ID,Country_Code,Sold_Units"];
-    rows.slice().sort(function (a, b) { return a.date - b.date || String(a.articleId).localeCompare(String(b.articleId)) || a.countryCode.localeCompare(b.countryCode); })
-      .forEach(function (r) { lines.push(r.date.toISOString().slice(0, 10) + "," + r.articleId + "," + r.countryCode + "," + r.units); });
-    var blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    var csvText = Core.Report.buildCsvString(rows);
+    var blob = new Blob([csvText], { type: "text/csv" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     var dmin = rows.reduce(function (m, r) { return Math.min(m, r.date.getTime()); }, Infinity);
@@ -591,7 +719,7 @@ License: MIT
   // ---- Rendering ----
   function renderAll() {
     var rows = filteredRows();
-    var stats = Core.computeStats(rows, state.aggMode);
+    var stats = Core.computeStats(rows, store.get("aggMode"));
     renderKpis(stats);
     renderChart(stats.series);
     renderCountries(stats.byCountry);
@@ -604,7 +732,7 @@ License: MIT
     var bp = s.bottomProduct;
     document.getElementById("kpiBottom").textContent = bp ? bp[0] : "–";
     document.getElementById("kpiBottomSub").textContent = bp ? bp[1].toLocaleString() + " units" : "";
-    var unit = state.aggMode === "day" ? "day" : state.aggMode;
+    var unit = store.get("aggMode") === "day" ? "day" : store.get("aggMode");
     var dir = Math.abs(s.trendPctOfMean) < 0.05 ? "Flat" : (s.slopePerBucket > 0 ? "Rising" : "Falling");
     document.getElementById("kpiTrend").textContent = dir;
     document.getElementById("kpiTrendSub").textContent = s.slopePerBucket.toFixed(1) + " units/" + unit + " (" + (s.trendPctOfMean * 100).toFixed(1) + "% of mean)";
@@ -620,29 +748,20 @@ License: MIT
   function renderChart(series) {
     var ctx = document.getElementById("mainChart");
     if (state.chart) state.chart.destroy();
-    // Thin labels for readability; keep all points.
-    var step = Math.max(1, Math.ceil(series.length / 60));
-    var values = series.map(function (b) { return b.units; });
-    var datasets = [{ label: "Units sold", data: values, borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,.15)", fill: true, pointRadius: 0, borderWidth: 1.5, tension: .2 }];
-    if (document.getElementById("optRegression").checked) {
-      var tl = Core.linearTrendLine(values);
-      if (tl) datasets.push({ label: "Regression line", data: values.map(function (_, i) { return tl[0] + (tl[1] - tl[0]) * (values.length > 1 ? i / (values.length - 1) : 0); }), borderColor: "#f87171", pointRadius: 0, borderWidth: 2, borderDash: [6, 4], fill: false });
-    }
-    var maWin = parseInt(document.getElementById("maWindow").value, 10);
-    if (document.getElementById("optMovingAvg").checked) {
-      datasets.push({ label: "Moving average (" + maWin + ")", data: Core.movingAverage(values, maWin), borderColor: "#fbbf24", pointRadius: 0, borderWidth: 2, tension: .3, fill: false });
-    }
+    // Chart spec built by the Charts module from pure inputs (no DOM reads inside).
+    var spec = Core.Charts.buildLineSpec(series, {
+      regression: document.getElementById("optRegression").checked,
+      movingAvg: document.getElementById("optMovingAvg").checked,
+      maWindow: parseInt(document.getElementById("maWindow").value, 10)
+    });
     state.chart = new Chart(ctx, {
       type: "line",
-      data: {
-        labels: series.map(function (b) { return b.label; }),
-        datasets: datasets
-      },
+      data: spec,
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
-        plugins: { legend: { display: datasets.length > 1, labels: { color: "#94a3b8" } } },
+        plugins: { legend: { display: spec.datasets.length > 1, labels: { color: "#94a3b8" } } },
         scales: {
-          x: { ticks: { color: "#94a3b8", maxTicksLimit: 12, autoSkip: true }, grid: { color: "rgba(51,65,85,.4)" }, title: { display: true, text: state.aggMode === "day" ? "Date (daily)" : "Period (" + state.aggMode + ")" } },
+          x: { ticks: { color: "#94a3b8", maxTicksLimit: 12, autoSkip: true }, grid: { color: "rgba(51,65,85,.4)" }, title: { display: true, text: store.get("aggMode") === "day" ? "Date (daily)" : "Period (" + store.get("aggMode") + ")" } },
           y: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "rgba(51,65,85,.4)" }, title: { display: true, text: "Units sold" } }
         }
       }
@@ -653,24 +772,40 @@ License: MIT
     var el = document.getElementById("countryList");
     if (!byCountry.length) { el.innerHTML = '<span class="muted">No data for current filters</span>'; return; }
     var max = byCountry[0][1] || 1;
-    el.innerHTML = byCountry.map(function (c) {
-      var pct = Math.round((c[1] / max) * 100);
-      return '<div class="country-row"><span>' + c[0] + '</span><div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div><span>' + c[1].toLocaleString() + "</span></div>";
-    }).join("");
+    // Nodes built with textContent — no unescaped values through innerHTML.
+    el.textContent = "";
+    byCountry.forEach(function (c) {
+      var row = document.createElement("div");
+      row.className = "country-row";
+      var code = document.createElement("span");
+      code.textContent = c[0];
+      var track = document.createElement("div");
+      track.className = "bar-track";
+      var fill = document.createElement("div");
+      fill.className = "bar-fill";
+      fill.style.width = Math.round((c[1] / max) * 100) + "%";
+      track.appendChild(fill);
+      var val = document.createElement("span");
+      val.textContent = c[1].toLocaleString();
+      row.appendChild(code);
+      row.appendChild(track);
+      row.appendChild(val);
+      el.appendChild(row);
+    });
   }
 
   // ---- AI panel (conversation history + cached data context) ----
-  var aiCtx = null; // { key, messages:[{role,content}] } — client-side conversation memory
+  // aiCtx now lives in the store: { key, messages:[{role,content}] } — client-side conversation memory.
 
   function filterKey() { // order-independent so re-checking the same set doesn't reset context
-    var s = function (a) { return a.slice().sort(); };
     var range = dateRange();
-    return JSON.stringify({ p: s(selectedProducts()), c: s(selectedCountries()), a: state.aggMode, d: [range[0], range[1]] });
+    return Core.AI.filterKey(store.get("selectedProducts"), store.get("selectedCountries"), store.get("aggMode"), range[0], range[1]);
   }
 
   function renderMd(text) {
+    // All markdown output passes through the sanitizer before insertion (no raw model HTML).
     if (typeof marked !== "undefined" && marked.parse) {
-      try { return marked.parse(String(text)); } catch (e) { /* fall through */ }
+      try { return Core.Text.sanitizeHtml(marked.parse(String(text))); } catch (e) { /* fall through */ }
     }
     var div = document.createElement("div");
     div.textContent = String(text);
@@ -706,7 +841,7 @@ License: MIT
   async function analyze() {
     var rows = filteredRows();
     if (!rows.length) { showError("No data in the current filter view — adjust filters or load a CSV."); return; }
-    var stats = Core.computeStats(rows, state.aggMode);
+    var stats = Core.computeStats(rows, store.get("aggMode"));
     var cfg = loadCfg();
     var question = document.getElementById("aiQuestion").value.trim();
 
@@ -718,11 +853,13 @@ License: MIT
     // Conversation caching: if the filtered view is unchanged since the last analysis,
     // follow-up questions are sent WITHOUT re-sending the data payload.
     var key = filterKey();
+    var aiCtx = store.get("aiCtx");
     if (!aiCtx || aiCtx.key !== key) {
       // Full visibility: send aggregate summary + complete month x product x country dataset.
-      aiCtx = { key: key, messages: [{ role: "user", content: Core.buildAiPrompt(stats, state.aggMode) + "\n\n" + Core.buildFullDataPayload(rows) }] };
+      aiCtx = { key: key, messages: [{ role: "user", content: Core.buildAiPrompt(stats, store.get("aggMode")) + "\n\n" + Core.buildFullDataPayload(rows) }] };
     }
     aiCtx.messages.push({ role: "user", content: question ? question : "Provide your analysis of this data." });
+    store.set("aiCtx", aiCtx);
 
     var hist = aiHistoryEl();
     var pending = document.createElement("div");
@@ -777,23 +914,26 @@ License: MIT
   }
 
   function newAnalysis() {
-    aiCtx = null; // force a fresh data summary on the next Analyze
+    store.set("aiCtx", null); // force a fresh data summary on the next Analyze
     var hist = aiHistoryEl();
     hist.innerHTML = '<div class="ai-entry empty-note" id="aiEmptyNote">New analysis started — type a question and click Analyze.</div>';
   }
 
-  // ---- Wiring ----
+  // ---- Wiring (all events via addEventListener; no inline handler strings) ----
   window.App = {
-    onFilterChange: function () { renderAll(); },
+    onFilterChange: onFilterChange,
     handleFile: handleFile,
     exportCsv: exportCsv,
     resetFilters: function () {
       document.querySelectorAll("#productList input").forEach(function (i) { i.checked = true; });
       document.querySelectorAll("#countryChecklist input").forEach(function (i) { i.checked = true; });
       document.querySelector('input[name="agg"][value="day"]').checked = true;
-      state.aggMode = "day";
+      store.set("aggMode", "day");
       document.getElementById("dateFrom").value = "";
       document.getElementById("dateTo").value = "";
+      var range = readDateRange();
+      store.update({ dateFromMs: range[0], dateToMs: range[1] });
+      syncChecklistState();
       renderAll();
     }
   };
@@ -809,8 +949,8 @@ License: MIT
     if (e.dataTransfer && e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
   });
 
-  document.querySelectorAll('input[name="agg"]').forEach(function (r) { r.addEventListener("change", function () { state.aggMode = this.value; renderAll(); }); });
-  ["dateFrom", "dateTo"].forEach(function (id) { document.getElementById(id).addEventListener("change", function () { renderAll(); }); });
+  document.querySelectorAll('input[name="agg"]').forEach(function (r) { r.addEventListener("change", function () { store.set("aggMode", this.value); renderAll(); }); });
+  ["dateFrom", "dateTo"].forEach(function (id) { document.getElementById(id).addEventListener("change", function () { var range = readDateRange(); store.update({ dateFromMs: range[0], dateToMs: range[1] }); renderAll(); }); });
   document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
   document.getElementById("prodAllBtn").addEventListener("click", function () {
     document.querySelectorAll("#productList input").forEach(function (i) { i.checked = true; });
