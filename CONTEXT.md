@@ -1,11 +1,11 @@
 # CONTEXT — Current Task
 
-## Status: V7 Phase 3 shipped as v6.05; v6.06 adds filter/theme UX improvements; Phase 4 is next
+## Status: V7 Phase 3 shipped as v6.05; v6.06 adds filter/theme UX; v6.07 adds "Edit mapping" re-assignment; Phase 4 is next
 **Repo:** https://github.com/joenobk/sales-analytics-tool (branch `main`)
-**Run it:** open `index.html` directly in a browser, or `npx serve .`. No build step, no network needed. Header shows **"v6.06 (self-contained)"** with an orange star icon — if your copy doesn't show that tag/icon, you have the old file; re-download/hard-refresh.
+**Run it:** open `index.html` directly in a browser, or `npx serve .`. No build step, no network needed. Header shows **"v6.07 (self-contained)"** with an orange star icon — if your copy doesn't show that tag/icon, you have the old file; re-download/hard-refresh.
 
 ## Versioning policy (user decision 2026-09-04)
-While v7 work is in progress, the header tag uses **v6.XX** increments of .01 per shipped change (currently v6.06). Only when ALL v7 phases are complete does the tag become **"v7 (self-contained)"**. Do not re-deliberate this scheme — bump to the next .01 for each new verified change.
+While v7 work is in progress, the header tag uses **v6.XX** increments of .01 per shipped change (currently v6.07). Only when ALL v7 phases are complete does the tag become **"v7 (self-contained)"**. Do not re-deliberate this scheme — bump to the next .01 for each new verified change.
 
 ## v3 features (session 4)
 Freeform AI question input · multi-select country filter · regression + moving-average trendline overlays on chart · select-all/deselect-all product buttons · orange five-point star favicon + in-app icon. All verified by extended real-Chrome e2e test.
@@ -36,9 +36,9 @@ Phase 3 makes the tool multi-source, per PRD Phase 3. **Inline SheetJS (xlsx 0.2
 
 ## Next steps (in order, for future sessions)
 The expanded `PRD.md` (V7 phased workbench) is authoritative over older planning documents. Phases 0–3 are complete and verified; Phases 4–10 remain.
-1. Implement PRD **Phase 4** (metric engine) — see `PRD.md` for the spec. Bump header tag to v6.07 when verified.
+1. Implement PRD **Phase 4** (metric engine) — see `PRD.md` for the spec. Bump header tag to v6.08 when verified.
 2. Continue Phases 5–10 in order; each phase bumps the header tag by .01 per the versioning policy above and must grow + pass both verify harnesses.
-3. User-side confirmation: open v6.06 in their browser and load `Historical_Data.csv` (mapping panel appears on first load; after Apply, "4,849 valid rows" + KPIs); try the product search box, Country All/None, the ☾/☀ theme toggle, then load a second file (e.g. `phase3_promotions.csv`) to see tabs, the Overview, proposed joins, and the filter-bus notes; exercise filters/aggregation/AI panel against at least 3 OpenAI-compatible providers (PRD success metric), including follow-up questions to confirm context caching.
+3. User-side confirmation: open v6.07 in their browser and load `Historical_Data.csv` (mapping panel appears on first load; after Apply, "4,849 valid rows" + KPIs); try **Edit mapping** on the Data coverage card to revise roles, the product search box, Country All/None, the ☾/☀ theme toggle, then load a second file (e.g. `phase3_promotions.csv`) to see tabs, the Overview, proposed joins, and the filter-bus notes; exercise filters/aggregation/AI panel against at least 3 OpenAI-compatible providers (PRD success metric), including follow-up questions to confirm context caching.
 4. If requested: add a README.md pointing to the repo + run instructions.
 
 ## Decisions already made (do NOT re-deliberate)
