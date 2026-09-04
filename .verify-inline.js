@@ -43,12 +43,12 @@ const inlineHandlers = appSource.match(/\bon[a-z]+\s*=\s*(["'])[^>]*\1/gi) || []
 if (inlineHandlers.length) { console.error("FAIL: inline event handlers remain in app source:", inlineHandlers.slice(0, 5)); process.exit(1); }
 console.log("inline event handlers in app source: 0");
 
-// Phase 0: all eight named modules exported on the SalesCore namespace.
+// Phase 0: all named modules exported on the SalesCore namespace (nine after Phase 2 added Entities).
 const mod = { exports: {} };
 new Function("module", "window", html.slice(html.lastIndexOf("<script>", s), e).replace(/^<script>/, ""))(mod, {});
-for (const name of ["Schema", "Store", "Metrics", "Charts", "Insight", "Text", "Report", "AI"]) {
+for (const name of ["Schema", "Store", "Entities", "Metrics", "Charts", "Insight", "Text", "Report", "AI"]) {
   if (!mod.exports[name]) { console.error("FAIL: module " + name + " missing on SalesCore"); process.exit(1); }
 }
-console.log("SalesCore modules:", ["Schema","Store","Metrics","Charts","Insight","Text","Report","AI"].join(", "));
+console.log("SalesCore modules:", ["Schema","Store","Entities","Metrics","Charts","Insight","Text","Report","AI"].join(", "));
 
 console.log("\nSELF-CONTAINED CHECK PASSED — no network needed to load libs");
