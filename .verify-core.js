@@ -344,4 +344,96 @@ const wrongFmtStrict = Core.parseWithMapping(
 );
 if (wrongFmtStrict.rows.length !== 2 || wrongFmtStrict.rows[0].date.toISOString().slice(0, 10) !== "2017-09-01") { console.error("FAIL: parseWithMapping must re-probe the time format from data:", JSON.stringify(wrongFmtStrict.rows)); process.exit(1); }
 
+// ---- Phase 4: declarative metric engine (PRD test additions) ----
+
+// 4.1 Every agg is correct against a fixture.
+const aggChecks = [
+  ["sum", [1, 2, 3, 4], 10],
+  ["avg", [1, 2, 3, 4], 2.5],
+  ["median", [1, 3, 5], 3],
+  ["median", [1, 2, 3, 4], 2.5],
+  ["count", [1, null, 3], 3],
+  ["countDistinct", [1, 1, 2, 3, 3], 3],
+  ["min", [4, 2, 9], 2],
+  ["max", [4, 2, 9], 9],
+  ["rate", ["true", "false", "yes", "no"], 0.5]
+];
+for (const [agg, vals, exp] of aggChecks) {
+  const got = Core.Metrics.applyAgg(vals, agg);
+  if (got !== exp) { console.error(`FAIL: applyAgg(${agg}) = ${got}, expected ${exp}`); process.exit(1); }
+}
+if (Core.Metrics.AGGS.length !== 8 || Core.Metrics.AGGS.indexOf("rate") === -1) { console.error("FAIL: AGGS list incomplete"); process.exit(1); }
+console.log("phase 4.1 aggs: ok");
+
+// 4.2 Computed fields via the safe expression parser (no eval). Field refs + arithmetic + functions.
+if (Core.Metrics.evalExpr("LinePrice * Quantity", { LinePrice: 10, Quantity: 3 }, null) !== 30) { console.error("FAIL: evalExpr arithmetic"); process.exit(1); }
+if (Core.Metrics.evalExpr("round(price * 0.9)", { price: 9.999 }, null) !== 9) { console.error("FAIL: evalExpr function call"); process.exit(1); }
+if (Core.Metrics.evalExpr("a + b * 2", { a: 1, b: 2 }, null) !== 5) { console.error("FAIL: evalExpr precedence"); process.exit(1); }
+let threw = false; try { Core.Metrics.evalExpr("a +", { a: 1 }, null); } catch (e) { threw = true; }
+if (!threw) { console.error("FAIL: malformed expression must throw, not eval"); process.exit(1); }
+console.log("phase 4.2 expr parser: ok");
+
+// 4.3 measure returns a traceable object with value/rowsUsed/filterState/datasetId.
+const m4Fields = ["Date", "Article_ID", "Country_Code", "Units"];
+const m4Rows = [
+  ["2024-01-05", "A1", "DE", "10"],
+  ["2024-01-20", "A1", "FR", "5"],
+  ["2024-02-10", "B2", "DE", "7"],
+  ["2024-03-01", "B2", "AT", "0"]
+];
+const m4Map = mkMap(m4Fields, ["time", "product", "geography", "amount"], ["time", "identifier", "geo", "measure"]);
+const m4 = Core.Metrics.measure(m4Rows, m4Map, { field: "amount", agg: "sum", label: "Total units", definition: "sum of amount" }, { datasetId: "ds1", filterState: { p: "x" } });
+if (m4.value !== 22 || m4.rowsUsed !== 4 || m4.datasetId !== "ds1" || !m4.formatted || m4.agg !== "sum" || m4.filterState.p !== "x") { console.error("FAIL: measure traceable object wrong:", JSON.stringify(m4)); process.exit(1); }
+console.log("phase 4.3 measure: ok");
+
+// 4.4 metricPacks + computeMetric on a raw-array + mapping fixture (totalUnits).
+const transDefs = Core.Metrics.metricPacks("transactions");
+if (!transDefs.some(d => d.id === "totalUnits")) { console.error("FAIL: transactions metric pack missing totalUnits"); process.exit(1); }
+const tuDef = transDefs.find(d => d.id === "totalUnits");
+const tu = Core.Metrics.computeMetric(tuDef, m4Rows, m4Map, { datasetId: "ds1" });
+if (!tu.available || tu.value !== 22 || tu.rowsUsed !== 4) { console.error("FAIL: computeMetric totalUnits:", JSON.stringify(tu)); process.exit(1); }
+console.log("phase 4.4 computeMetric: ok");
+
+// 4.5 columnIndex resolves by concept and by substring (stage -> OpportunityStage).
+const opMap = mkMap(["OpportunityID", "OpportunityStage", "EstimatedValue"], ["opportunity", null, "amount"], ["identifier", "dimension", "measure"]);
+if (Core.Metrics.columnIndex(opMap, "stage") !== 1) { console.error("FAIL: columnIndex substring ('stage')"); process.exit(1); }
+if (Core.Metrics.columnIndex(opMap, "amount") !== 2) { console.error("FAIL: columnIndex concept ('amount')"); process.exit(1); }
+console.log("phase 4.5 columnIndex: ok");
+
+// 4.6 concentration: top-N share + Herfindahl index (A1=15, B2=7, total 22). topN=1 so only A1 is "top".
+const conc = Core.Metrics.concentration(m4Rows, m4Map, "product", "amount", 1);
+const expShare = 15 / 22, expHhi = (15 / 22) * (15 / 22) + (7 / 22) * (7 / 22);
+if (Math.abs(conc.topShare - expShare) > 1e-9 || Math.abs(conc.herfindahl - expHhi) > 1e-9) { console.error("FAIL: concentration wrong:", JSON.stringify(conc)); process.exit(1); }
+console.log("phase 4.6 concentration: ok");
+
+// 4.7 Period comparison handles a missing prior period without throwing; rowsUsed matches filtered count.
+const janFrom = new Date("2024-01-01").getTime(), janTo = new Date("2024-01-31").getTime();
+const cmp = Core.Metrics.comparePeriods(m4Rows, m4Map, { field: "amount", agg: "sum" }, { fromMs: janFrom, toMs: janTo, datasetId: "ds1" });
+if (cmp.current.value !== 15 || cmp.current.rowsUsed !== 2) { console.error("FAIL: comparePeriods current:", JSON.stringify(cmp.current)); process.exit(1); }
+if (cmp.prior.value !== 0 || cmp.yearAgo.value !== 0) { console.error("FAIL: missing prior/year-ago must be 0, not throw:", JSON.stringify(cmp)); process.exit(1); }
+if (cmp.deltaPct !== null) { console.error("FAIL: zero prior must yield null deltaPct, not division by zero"); process.exit(1); }
+const janRows = Core.Metrics.filterByRange(m4Rows, m4Map, janFrom, janTo);
+if (janRows.length !== 2) { console.error("FAIL: filterByRange count"); process.exit(1); }
+console.log("phase 4.7 comparePeriods: ok");
+
+// 4.8 bucketSeries + seasonalityOf over the fixture.
+const ser = Core.Metrics.bucketSeries(m4Rows, m4Map, "month");
+if (ser.length !== 3 || ser[0].units !== 15 || ser[1].units !== 7 || ser[2].units !== 0) { console.error("FAIL: bucketSeries:", JSON.stringify(ser)); process.exit(1); }
+const sea = Core.Metrics.seasonalityOf(m4Rows, m4Map, "amount");
+if (!sea.peak || sea.peak.month !== 0 || Math.abs(sea.peakDeviation - ((7.5 - 5.5) / 5.5)) > 1e-9) { console.error("FAIL: seasonalityOf:", JSON.stringify(sea)); process.exit(1); }
+console.log("phase 4.8 bucketSeries/seasonality: ok");
+
+// 4.9 A metric whose required field is absent reports available:false with a reason, never a fabricated value.
+const noStageMap = mkMap(["OpportunityID", "EstimatedValue"], ["opportunity", "amount"], ["identifier", "measure"]);
+const winDef = Core.Metrics.metricPacks("opportunities").find(d => d.id === "winRate");
+const winR = Core.Metrics.computeMetric(winDef, m4Rows, noStageMap, { datasetId: "ds2" });
+if (winR.available !== false || !/Missing column/i.test(winR.reason)) { console.error("FAIL: missing-field metric must be unavailable:", JSON.stringify(winR)); process.exit(1); }
+console.log("phase 4.9 unavailable metric: ok");
+
+// 4.10 Real-data regression: the metric engine's totalUnits on Historical_Data = 9,537 (v6 anchor).
+const hdMap = mkMap(header, ["time", "product", "geography", "amount"], ["time", "identifier", "geo", "measure"]);
+const hdTotal = Core.Metrics.computeMetric(transDefs.find(d => d.id === "totalUnits"), dataRows, hdMap, { datasetId: "hd" });
+if (hdTotal.available !== true || hdTotal.value !== 9537 || hdTotal.rowsUsed !== 4849) { console.error("FAIL: metric engine totalUnits on Historical_Data:", JSON.stringify(hdTotal)); process.exit(1); }
+console.log("phase 4.10 real-data totalUnits: ok");
+
 console.log("\nALL CHECKS PASSED");
