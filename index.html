@@ -169,7 +169,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.08 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.09 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
@@ -255,6 +255,25 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       <div class="card">
         <div class="panel-title">Sales by country</div>
         <div class="country-list" id="countryList"><span class="muted">No data loaded</span></div>
+      </div>
+
+      <div class="card">
+        <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">Spec-driven charts<button id="addChartBtn" type="button" title="Build a chart from a JSON spec (validated before rendering)">+ Add chart</button></div>
+        <div id="chartSpecEditor" style="display:none">
+          <div class="field"><label>Chart type</label>
+            <select id="chartType"><option value="line">line</option><option value="bar">bar</option><option value="stackedBar">stackedBar</option><option value="groupedBar">groupedBar</option><option value="area">area</option><option value="scatter">scatter</option><option value="table">table</option></select>
+          </div>
+          <div class="field"><label>X field</label><input type="text" id="chartXField" placeholder="time or a dimension field, e.g. time"></div>
+          <div class="field"><label>X bucket (day/week/month/quarter/year)</label><input type="text" id="chartXBucket" placeholder="month"></div>
+          <div class="field"><label>Y field</label><input type="text" id="chartYField" placeholder="amount"></div>
+          <div class="field"><label>Y agg</label>
+            <select id="chartYAgg"><option value="sum">sum</option><option value="avg">avg</option><option value="count">count</option><option value="countDistinct">countDistinct</option><option value="median">median</option><option value="min">min</option><option value="max">max</option><option value="rate">rate</option></select>
+          </div>
+          <div class="field"><label>Split by (optional)</label><input type="text" id="chartSplit" placeholder="e.g. geography"></div>
+          <div class="field"><label>Title (optional)</label><input type="text" id="chartTitle" placeholder="Units by month"></div>
+          <div style="display:flex;gap:8px"><button id="chartRenderBtn" type="button">Render</button><button id="chartSpecErr" class="muted" style="display:none"></button></div>
+        </div>
+        <div id="chartList"><span class="muted">No charts yet — click "+ Add chart" or let the AI propose a spec.</span></div>
       </div>
 
       <div class="card">
@@ -1624,7 +1643,175 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   }
   Charts.buildLineSpec = buildLineSpec;
 
-  // ---- Insight module (AI prompt + statistical fallback) ----
+  // ---- Phase 5: spec-driven chart renderer ----
+  // A chart is a validated JSON spec. One renderer consumes the spec, pulls values from the
+  // metric engine, and draws with Chart.js. The chart builder UI and the AI both write the same
+  // spec, so both go through one validated code path.
+  Charts.TYPES = ["line", "bar", "stackedBar", "groupedBar", "area", "scatter", "heatmap", "funnel", "waterfall", "pareto", "smallMultiples", "table"];
+  Charts.BUCKETS = ["day", "week", "month", "quarter", "year"];
+
+  // Resolve a spec field (concept, header, or substring) to a column object in a concept-bound mapping.
+  function fieldColumn(mapping, field) {
+    if (!mapping || !field) return null;
+    var name = Entities.columnForConcept(mapping, field) || field;
+    var nh = normalizeHeader(name);
+    for (var i = 0; i < mapping.length; i++) if (mapping[i].name === name || normalizeHeader(mapping[i].name) === nh) return mapping[i];
+    var f = normalizeHeader(field);
+    for (var j = 0; j < mapping.length; j++) {
+      var mh = normalizeHeader(mapping[j].name);
+      if (mh.indexOf(f) >= 0 || f.indexOf(mh) >= 0) return mapping[j];
+    }
+    return null;
+  }
+  Charts.fieldColumn = fieldColumn;
+
+  // Aggregate a single measure over a set of rows via the metric engine.
+  function aggForRows(rows, mapping, yEntry) {
+    var values = yEntry.computed ? rows.map(function (r) { return Metrics.evalExpr(yEntry.computed, r, mapping); })
+      : rows.map(function (r) { return Metrics.rowValue(r, mapping, yEntry.field); });
+    return Metrics.applyAgg(values, yEntry.agg);
+  }
+  Charts.aggForRows = aggForRows;
+
+  // Validate a chart spec. Returns {valid, errors}. An invalid spec never reaches the renderer.
+  function validateSpec(spec, mapping) {
+    var errors = [];
+    if (!spec || typeof spec !== "object" || Array.isArray(spec)) return { valid: false, errors: ["spec must be a JSON object"] };
+    if (Charts.TYPES.indexOf(spec.type) === -1) errors.push("unknown chart type '" + spec.type + "' (valid: " + Charts.TYPES.join(", ") + ")");
+    if (spec.x) {
+      if (typeof spec.x !== "object") errors.push("x must be an object");
+      else {
+        if (spec.x.field && !fieldColumn(mapping, spec.x.field)) errors.push("unknown x field '" + spec.x.field + "'");
+        if (spec.x.bucket && Charts.BUCKETS.indexOf(spec.x.bucket) === -1) errors.push("unknown x bucket '" + spec.x.bucket + "'");
+        if (!spec.x.field && !spec.x.bucket) errors.push("x needs a field or a bucket");
+      }
+    }
+    if (!Array.isArray(spec.y) || !spec.y.length) errors.push("y must be a non-empty array of {field, agg}");
+    else {
+      spec.y.forEach(function (yd, i) {
+        if (typeof yd !== "object") { errors.push("y[" + i + "] must be an object"); return; }
+        if (!yd.computed && !yd.field) errors.push("y[" + i + "] needs a field");
+        if (yd.field && !fieldColumn(mapping, yd.field)) errors.push("unknown y field '" + yd.field + "'");
+        if (Metrics.AGGS.indexOf(yd.agg) === -1) errors.push("unknown y agg '" + yd.agg + "' (valid: " + Metrics.AGGS.join(", ") + ")");
+        // Measure agg on a dimension/identifier/geo/time column is invalid (e.g. sum of a product ID).
+        var col = yd.field ? fieldColumn(mapping, yd.field) : null;
+        var numericAgg = ["sum", "avg", "median", "min", "max"].indexOf(yd.agg) >= 0;
+        if (col && numericAgg && !yd.computed && (col.role === "dimension" || col.role === "identifier" || col.role === "geo" || col.role === "time")) {
+          errors.push("y[" + i + "] applies '" + yd.agg + "' to dimension/identifier field '" + yd.field + "' — use count or a measure");
+        }
+      });
+    }
+    if (spec.splitBy && !fieldColumn(mapping, spec.splitBy)) errors.push("unknown splitBy field '" + spec.splitBy + "'");
+    if (spec.sort && ["asc", "desc"].indexOf(spec.sort) === -1) errors.push("sort must be 'asc' or 'desc'");
+    if (spec.limit != null && (typeof spec.limit !== "number" || spec.limit < 1)) errors.push("limit must be a positive number");
+    (spec.overlays || []).forEach(function (o) { if (["regression", "movingAverage", "target", "priorPeriod"].indexOf(o) === -1) errors.push("unknown overlay '" + o + "'"); });
+    (spec.annotations || []).forEach(function (a, i) { if (a == null || typeof a !== "object") errors.push("annotations[" + i + "] must be an object"); });
+    return { valid: errors.length === 0, errors: errors };
+  }
+  Charts.validateSpec = validateSpec;
+
+  // Group rows by the spec's x axis (time-bucketed or categorical). Returns [{key,label,rows}] sorted.
+  function groupRows(rows, mapping, spec) {
+    var groups = new Map();
+    var timeX = spec.x && spec.x.bucket;
+    var xField = spec.x && spec.x.field;
+    var tc = timeColumn(mapping);
+    rows.forEach(function (r) {
+      var key, label;
+      if (timeX) {
+        var t = Metrics.rowValue(r, mapping, xField);
+        var dt = Metrics.parseTime(t, tc && tc.format);
+        if (!dt) return;
+        var b = Metrics.bucketFor(dt, spec.x.bucket);
+        key = b.key; label = Metrics.bucketLabel(b.key, spec.x.bucket);
+      } else if (xField) {
+        var v = Metrics.rowValue(r, mapping, xField);
+        key = v == null ? "" : String(v).trim(); label = key;
+      } else { key = "_all"; label = "All"; }
+      if (!groups.has(key)) groups.set(key, { key: key, label: label, rows: [] });
+      groups.get(key).rows.push(r);
+    });
+    var arr = Array.from(groups.values());
+    if (timeX) arr.sort(function (a, b) { return a.key < b.key ? -1 : 1; });
+    else arr.sort(function (a, b) { return a.label < b.label ? -1 : 1; });
+    return arr;
+  }
+  Charts.groupRows = groupRows;
+
+  // Build Chart.js-ready series {type, labels, datasets} from a validated spec + rows (metric engine).
+  function buildSeries(spec, rows, mapping, opts) {
+    opts = opts || {};
+    var groups = groupRows(rows, mapping, spec);
+    var labels = groups.map(function (g) { return g.label; });
+    var datasets = [];
+    var palettes = [["#38bdf8", "rgba(56,189,248,.15)"], ["#f472b6", "rgba(244,114,182,.15)"], ["#a78bfa", "rgba(167,139,250,.15)"], ["#34d399", "rgba(52,211,153,.15)"], ["#fbbf24", "rgba(251,191,36,.15)"], ["#f87171", "rgba(248,113,113,.15)"], ["#60a5fa", "rgba(96,165,250,.15)"], ["#f97316", "rgba(249,115,22,.15)"]];
+
+    function dataFor(g, yEntry) {
+      var v = aggForRows(g.rows, mapping, yEntry);
+      return v == null ? null : v;
+    }
+    function makeDataset(label, data, i, specType) {
+      var pal = palettes[i % palettes.length];
+      var d = { label: label, data: data, borderColor: pal[0], backgroundColor: pal[1] };
+      if (specType === "bar" || specType === "groupedBar") { d.backgroundColor = pal[0]; d.borderColor = pal[0]; }
+      if (specType === "stackedBar") { d.backgroundColor = pal[0]; d.borderColor = pal[0]; }
+      if (specType === "area" || specType === "line") { d.fill = true; d.tension = .2; d.pointRadius = 0; d.borderWidth = 1.5; }
+      if (specType === "scatter") { d.pointRadius = 3; d.backgroundColor = pal[0]; d.borderColor = pal[0]; }
+      return d;
+    }
+
+    var split = spec.splitBy ? fieldColumn(mapping, spec.splitBy) : null;
+    if (split) {
+      var splitIdx = split.idx;
+      var splitVals = [];
+      rows.forEach(function (r) {
+        var v = Metrics.rowValue(r, mapping, spec.splitBy); var k = v == null ? "" : String(v).trim();
+        if (k && splitVals.indexOf(k) === -1) splitVals.push(k);
+      });
+      var bi = 0;
+      splitVals.forEach(function (sv) {
+        spec.y.forEach(function (yEntry) {
+          var sub = rows.filter(function (r) { return String(Metrics.rowValue(r, mapping, spec.splitBy) == null ? "" : Metrics.rowValue(r, mapping, spec.splitBy)).trim() === sv; });
+          var g2 = groups.map(function (g) { return { key: g.key, label: g.label, rows: g.rows.filter(function (r) { return String(Metrics.rowValue(r, mapping, spec.splitBy) == null ? "" : Metrics.rowValue(r, mapping, spec.splitBy)).trim() === sv; }) }; });
+          var data = g2.map(function (g) { return dataFor(g, yEntry); });
+          datasets.push(makeDataset(sv + (spec.y.length > 1 ? " — " + (yEntry.label || yEntry.field) : ""), data, bi++, spec.type));
+        });
+      });
+    } else {
+      spec.y.forEach(function (yEntry, i) {
+        var data = groups.map(function (g) { return dataFor(g, yEntry); });
+        datasets.push(makeDataset(yEntry.label || yEntry.field || "value", data, i, spec.type));
+      });
+    }
+
+    // Overlays.
+    (spec.overlays || []).forEach(function (o) {
+      var base = datasets[0];
+      if (!base) return;
+      if (o === "regression" && base.data.length > 1) {
+        var vals = base.data.map(function (x) { return x == null ? 0 : x; });
+        var tl = linearTrendLine(vals);
+        if (tl) datasets.push({ label: "Regression", data: vals.map(function (_, i) { return tl[0] + (tl[1] - tl[0]) * (vals.length > 1 ? i / (vals.length - 1) : 0); }), borderColor: "#f87171", pointRadius: 0, borderWidth: 2, borderDash: [6, 4], fill: false });
+      }
+      if (o === "movingAverage") {
+        var w = (spec.overlaysMa && spec.overlaysMa.window) || 3;
+        datasets.push({ label: "Moving avg (" + w + ")", data: movingAverage(base.data.map(function (x) { return x == null ? 0 : x; }), w), borderColor: "#fbbf24", pointRadius: 0, borderWidth: 2, tension: .3, fill: false });
+      }
+    });
+
+    // Sort / limit.
+    if (spec.sort || spec.limit) {
+      var sortedIdx = labels.map(function (_, i) { return i; });
+      if (spec.sort) sortedIdx.sort(function (a, b) { var va = baseNum(datasets[0].data[a]), vb = baseNum(datasets[0].data[b]); return spec.sort === "desc" ? vb - va : va - vb; });
+      if (spec.limit && sortedIdx.length > spec.limit) sortedIdx = sortedIdx.slice(0, spec.limit);
+      labels = sortedIdx.map(function (i) { return labels[i]; });
+      datasets = datasets.map(function (d) { return { label: d.label, data: sortedIdx.map(function (i) { return d.data[i]; }), borderColor: d.borderColor, backgroundColor: d.backgroundColor, fill: d.fill, tension: d.tension, pointRadius: d.pointRadius, borderWidth: d.borderWidth, borderDash: d.borderDash }; });
+    }
+    function baseNum(v) { return v == null ? 0 : v; }
+
+    return { type: spec.type, labels: labels, datasets: datasets, title: spec.title || "" };
+  }
+  Charts.buildSeries = buildSeries;
   var Insight = {};
 
   // Optional coverage section: tells the model which concepts are absent or only partially
@@ -1831,6 +2018,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     var activeId = null;    // id of the dataset shown; null while the overview tab is active
     var view = "dataset";   // "dataset" | "overview"
     var declaredJoins = []; // { id, from, fromConcept, to, toConcept, matchRate, distinctKeys, index (hash built once at declaration) }
+    var savedCharts = [];   // Phase 5: validated chart specs (add/remove/reorder/duplicate/pin) — each {id, spec}
 
     function datasetById(id) {
       for (var i = 0; i < datasets.length; i++) if (datasets[i].id === id) return datasets[i];
@@ -2495,6 +2683,128 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   document.getElementById("mapAiAssistBtn").addEventListener("click", aiAssistMapping);
     document.getElementById("remapBtn").addEventListener("click", startRemap);
 
+  // ---- Phase 5: spec-driven chart builder + management (one validated code path) ----
+  function currentChartDataset() {
+    // The active dataset's raw rows + concept-bound mapping feed the renderer. Falls back to the last loaded dataset.
+    var rec = datasetById(activeId);
+    if (!rec && datasets.length) rec = datasets[0];
+    return rec;
+  }
+  function toggleChartEditor(show) {
+    var e = document.getElementById("chartSpecEditor");
+    e.style.display = show ? "block" : "none";
+    if (show) {
+      var rec = currentChartDataset();
+      var tCol = rec && rec.mapping ? Core.Entities.columnForConcept(rec.mapping, "time") : null;
+      document.getElementById("chartXField").value = tCol || "time";
+      document.getElementById("chartXBucket").value = store.get("aggMode") || "month";
+    }
+  }
+  document.getElementById("addChartBtn").addEventListener("click", function () {
+    var e = document.getElementById("chartSpecEditor");
+    toggleChartEditor(e.style.display === "none");
+  });
+
+  // Read the builder form into a chart spec (strict JSON, validated before rendering).
+  function readChartSpecFromForm() {
+    var rec = currentChartDataset();
+    var spec = {
+      id: "c" + Date.now().toString(36),
+      datasetId: rec ? rec.id : null,
+      type: document.getElementById("chartType").value,
+      x: { field: document.getElementById("chartXField").value.trim() || null, bucket: document.getElementById("chartXBucket").value.trim() || null },
+      y: [{ field: document.getElementById("chartYField").value.trim(), agg: document.getElementById("chartYAgg").value, label: document.getElementById("chartYField").value.trim() }],
+      splitBy: document.getElementById("chartSplit").value.trim() || null,
+      title: document.getElementById("chartTitle").value.trim() || null
+    };
+    return spec;
+  }
+  document.getElementById("chartRenderBtn").addEventListener("click", function () {
+    var errEl = document.getElementById("chartSpecErr");
+    var rec = currentChartDataset();
+    if (!rec || !rec.mapping) { errEl.style.display = "inline"; errEl.textContent = "Load a dataset first."; return; }
+    var spec = readChartSpecFromForm();
+    var v = Core.Charts.validateSpec(spec, rec.mapping);
+    if (!v.valid) { errEl.style.display = "inline"; errEl.textContent = v.errors.join("; "); return; }
+    errEl.style.display = "none";
+    savedCharts.push({ id: spec.id, spec: spec });
+    renderChartList();
+    renderAll();
+  });
+
+  // Render one saved chart spec into its own canvas via the shared renderer.
+  function renderChartFromSpec(rec, spec) {
+    var fb = filteredRowsFor(rec);
+    var series = Core.Charts.buildSeries(spec, fb.rows, rec.mapping, { aggMode: store.get("aggMode") });
+    if (spec.type === "table") return { html: tableHtml(series) };
+    return series;
+  }
+  function tableHtml(series) {
+    var cols = series.datasets.map(function (d) { return d.label; });
+    var h = '<div class="table-wrap"><table class="spec-table"><thead><tr><th></th>' + cols.map(function (c) { return "<th>" + esc(c) + "</th>"; }).join("") + "</tr></thead><tbody>";
+    for (var i = 0; i < series.labels.length; i++) {
+      h += "<tr><td>" + esc(series.labels[i]) + "</td>" + series.datasets.map(function (d) { var v = d.data[i]; return "<td>" + (v == null ? "–" : esc(String(v))) + "</td>"; }).join("") + "</tr>";
+    }
+    return h + "</tbody></table></div>";
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+
+  // Draw a saved chart into a target canvas element.
+  function drawSavedChart(canvas, rec, spec) {
+    if (!canvas || !rec) return;
+    var fb = filteredRowsFor(rec);
+    var series = Core.Charts.buildSeries(spec, fb.rows, rec.mapping, { aggMode: store.get("aggMode") });
+    if (spec.type === "table") { canvas.parentNode.innerHTML = tableHtml(series); return; }
+    var th = chartTheme();
+    var chartType = spec.type;
+    if (chartType === "groupedBar" || chartType === "stackedBar") chartType = "bar";
+    if (chartType === "area") chartType = "line";
+    var opts = {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: series.datasets.length > 1, labels: { color: th.text } }, title: spec.title ? { display: true, text: spec.title, color: th.text } : {} },
+      scales: { x: { ticks: { color: th.text, maxTicksLimit: 12, autoSkip: true }, grid: { color: th.grid } }, y: { beginAtZero: true, ticks: { color: th.text }, grid: { color: th.grid } } }
+    };
+    if ((spec.type === "stackedBar") && opts.scales) opts.scales.x.stacked = true, opts.scales.y.stacked = true;
+    new Chart(canvas, { type: chartType, data: { labels: series.labels, datasets: series.datasets }, options: opts });
+  }
+
+  // List saved charts with add/remove/reorder/duplicate/pin controls.
+  function renderChartList() {
+    var el = document.getElementById("chartList");
+    el.textContent = "";
+    if (!savedCharts.length) { var m = document.createElement("span"); m.className = "muted"; m.textContent = "No charts yet — click \"+ Add chart\" or let the AI propose a spec."; el.appendChild(m); return; }
+    savedCharts.forEach(function (c, i) {
+      var rec = datasetById(c.spec.datasetId) || currentChartDataset();
+      var box = document.createElement("div");
+      box.className = "card";
+      box.style.cssText = "padding:8px 10px;margin-bottom:8px";
+      var head = document.createElement("div");
+      head.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:.82rem";
+      var t = document.createElement("span");
+      t.style.cssText = "font-weight:600";
+      t.textContent = (c.spec.title || c.spec.type) + " · " + (c.spec.x && c.spec.x.field ? c.spec.x.field : "—") + " → " + (c.spec.y && c.spec.y[0] ? c.spec.y[0].field + " (" + c.spec.y[0].agg + ")" : "—");
+      head.appendChild(t);
+      [["↑", function () { if (i > 0) { savedCharts.splice(i - 1, 0, savedCharts.splice(i, 1)[0]); renderChartList(); renderAll(); } }],
+       ["↓", function () { if (i < savedCharts.length - 1) { savedCharts.splice(i + 1, 0, savedCharts.splice(i, 1)[0]); renderChartList(); renderAll(); } }],
+       ["⧉", function () { savedCharts.splice(i + 1, 0, { id: "c" + Date.now().toString(36), spec: JSON.parse(JSON.stringify(c.spec)) }); renderChartList(); renderAll(); }],
+       ["✕", function () { savedCharts.splice(i, 1); renderChartList(); renderAll(); }]
+      ].forEach(function (b) {
+        var btn = document.createElement("button");
+        btn.type = "button"; btn.textContent = b[0]; btn.style.cssText = "font-size:.72rem;padding:0 6px";
+        btn.addEventListener("click", b[1]); head.appendChild(btn);
+      });
+      box.appendChild(head);
+      var wrap = document.createElement("div");
+      wrap.style.cssText = "position:relative;height:220px;margin-top:6px";
+      var canvas = document.createElement("canvas");
+      wrap.appendChild(canvas);
+      box.appendChild(wrap);
+      el.appendChild(box);
+      if (rec && rec.mapping) drawSavedChart(canvas, rec, c.spec);
+    });
+  }
+  document.getElementById("chartSpecErr").style.display = "none";
+
   // ---- Filters UI (nodes built with textContent; events via addEventListener — no inline handlers) ----
   function applyProductSearch() { // filter the checkbox list to whatever matches the search box
       var q = (document.getElementById("productSearch").value || "").trim().toLowerCase();
@@ -2587,6 +2897,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     renderKpis(stats);
     renderChart(stats.series);
     renderCountries(stats.byCountry);
+    renderChartList(); // Phase 5: saved spec-driven charts re-render against the current filters
   }
 
   // Phase 2: group/join on the ID, display the label when one exists (entity registry).

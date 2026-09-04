@@ -436,4 +436,68 @@ const hdTotal = Core.Metrics.computeMetric(transDefs.find(d => d.id === "totalUn
 if (hdTotal.available !== true || hdTotal.value !== 9537 || hdTotal.rowsUsed !== 4849) { console.error("FAIL: metric engine totalUnits on Historical_Data:", JSON.stringify(hdTotal)); process.exit(1); }
 console.log("phase 4.10 real-data totalUnits: ok");
 
+// ---- Phase 5: spec-driven chart renderer (PRD test additions) ----
+
+// 5.1 An invalid spec is rejected with a specific error and never reaches the renderer.
+const sMap = mkMap(["Date", "Article_ID", "Country_Code", "Sold_Units"], ["time", "product", "geography", "amount"], ["time", "identifier", "geo", "measure"]);
+const badType = Core.Charts.validateSpec({ type: "pie", x: { field: "Date" }, y: [{ field: "Sold_Units", agg: "sum" }] }, sMap);
+if (badType.valid || !/unknown chart type/.test(badType.errors.join(" "))) { console.error("FAIL: unknown chart type must be rejected:", JSON.stringify(badType)); process.exit(1); }
+const badField = Core.Charts.validateSpec({ type: "bar", x: { field: "Nope" }, y: [{ field: "Sold_Units", agg: "sum" }] }, sMap);
+if (badField.valid || !/unknown x field/.test(badField.errors.join(" "))) { console.error("FAIL: unknown x field must be rejected:", JSON.stringify(badField)); process.exit(1); }
+const badAgg = Core.Charts.validateSpec({ type: "bar", x: { field: "Date", bucket: "month" }, y: [{ field: "Sold_Units", agg: "medianish" }] }, sMap);
+if (badAgg.valid || !/unknown y agg/.test(badAgg.errors.join(" "))) { console.error("FAIL: unknown agg must be rejected:", JSON.stringify(badAgg)); process.exit(1); }
+const badDim = Core.Charts.validateSpec({ type: "bar", x: { field: "Date", bucket: "month" }, y: [{ field: "Article_ID", agg: "sum" }] }, sMap);
+if (badDim.valid || !/dimension|identifier/i.test(badDim.errors.join(" "))) { console.error("FAIL: sum of an identifier must be rejected:", JSON.stringify(badDim)); process.exit(1); }
+console.log("phase 5.1 invalid-spec rejection: ok");
+
+// 5.2 Each chart type produces correct series data from a fixture (monthly total = 15,7,0).
+const p5Rows = [
+  ["2024-01-05", "A1", "DE", "10"],
+  ["2024-01-20", "A1", "FR", "5"],
+  ["2024-02-10", "B2", "DE", "7"],
+  ["2024-03-01", "B2", "AT", "0"]
+];
+for (const type of ["line", "bar", "stackedBar", "groupedBar", "area", "scatter"]) {
+  const spec = { type: type, x: { field: "Date", bucket: "month" }, y: [{ field: "Units", agg: "sum", label: "Units" }] };
+  const series = Core.Charts.buildSeries(spec, p5Rows, m4Map, {});
+  if (series.labels.length !== 3 || series.datasets.length !== 1) { console.error(`FAIL: ${type} series shape`, JSON.stringify(series)); process.exit(1); }
+  const data = series.datasets[0].data;
+  if (data[0] !== 15 || data[1] !== 7 || data[2] !== 0) { console.error(`FAIL: ${type} data`, JSON.stringify(data)); process.exit(1); }
+}
+console.log("phase 5.2 chart types: ok");
+
+// 5.3 splitBy yields one dataset per split value, each correct.
+const splitSpec = { type: "bar", x: { field: "Date", bucket: "month" }, y: [{ field: "Units", agg: "sum" }], splitBy: "Country_Code" };
+const splitSeries = Core.Charts.buildSeries(splitSpec, p5Rows, m4Map, {});
+if (splitSeries.datasets.length !== 3) { console.error("FAIL: splitBy dataset count (one per distinct split value)", JSON.stringify(splitSeries)); process.exit(1); }
+// DE rows are Jan(10)+Feb(7); FR is Jan(5); AT is Mar(0).
+const deSet = splitSeries.datasets.find(d => d.label.indexOf("DE") === 0);
+const frSet = splitSeries.datasets.find(d => d.label.indexOf("FR") === 0);
+if (!deSet || !frSet) { console.error("FAIL: splitBy datasets missing DE/FR", JSON.stringify(splitSeries.datasets.map(d => d.label))); process.exit(1); }
+if (deSet.data[0] !== 10 || deSet.data[1] !== 7 || frSet.data[0] !== 5 || frSet.data[1] !== 0) { console.error("FAIL: splitBy data wrong", JSON.stringify({ de: deSet.data, fr: frSet.data })); process.exit(1); }
+console.log("phase 5.3 splitBy: ok");
+
+// 5.4 Overlays (regression) add a dataset without altering the base series.
+const ovSpec = { type: "line", x: { field: "Date", bucket: "month" }, y: [{ field: "Units", agg: "sum" }], overlays: ["regression"] };
+const ovSeries = Core.Charts.buildSeries(ovSpec, p5Rows, m4Map, {});
+if (ovSeries.datasets.length !== 2 || ovSeries.datasets[1].label !== "Regression") { console.error("FAIL: regression overlay", JSON.stringify(ovSeries.datasets.map(d => d.label))); process.exit(1); }
+if (ovSeries.datasets[0].data[0] !== 15) { console.error("FAIL: overlay must not alter base series"); process.exit(1); }
+console.log("phase 5.4 overlays: ok");
+
+// 5.5 Table type returns the same underlying values; sort/limit are honored.
+const tableSeries = Core.Charts.buildSeries({ type: "table", x: { field: "Date", bucket: "month" }, y: [{ field: "Units", agg: "sum" }] }, p5Rows, m4Map, {});
+if (tableSeries.labels.length !== 3 || tableSeries.datasets[0].data.length !== 3) { console.error("FAIL: table series", JSON.stringify(tableSeries)); process.exit(1); }
+const descSpec = { type: "bar", x: { field: "Date", bucket: "month" }, y: [{ field: "Units", agg: "sum" }], sort: "desc", limit: 2 };
+const descSeries = Core.Charts.buildSeries(descSpec, p5Rows, m4Map, {});
+if (descSeries.labels.length !== 2 || descSeries.datasets[0].data[0] !== 15 || descSeries.datasets[0].data[1] !== 7) { console.error("FAIL: sort/limit", JSON.stringify({ labels: descSeries.labels, data: descSeries.datasets[0].data })); process.exit(1); }
+console.log("phase 5.5 table + sort/limit: ok");
+
+// 5.6 Categorical x (no bucket) groups by the field's distinct values.
+const catSpec = { type: "bar", x: { field: "Country_Code" }, y: [{ field: "Units", agg: "sum" }] };
+const catSeries = Core.Charts.buildSeries(catSpec, p5Rows, m4Map, {});
+if (catSeries.labels.indexOf("DE") === -1 || catSeries.labels.indexOf("FR") === -1) { console.error("FAIL: categorical x labels", JSON.stringify(catSeries.labels)); process.exit(1); }
+const deI = catSeries.labels.indexOf("DE");
+if (catSeries.datasets[0].data[deI] !== 17) { console.error("FAIL: categorical x DE sum (10+7)", JSON.stringify(catSeries.datasets[0].data)); process.exit(1); }
+console.log("phase 5.6 categorical x: ok");
+
 console.log("\nALL CHECKS PASSED");
