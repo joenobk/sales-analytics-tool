@@ -587,5 +587,50 @@ const prof = Core.Tools.openProfile(objRows, m4Map, "month");
 if (prof.total !== 22 || !prof.top || !prof.coverage || !prof.coverage.product || !prof.coverage.geography) { console.error("FAIL: openProfile", JSON.stringify(prof)); process.exit(1); }
 console.log("phase 6.7 openProfile: ok");
 
+// ---- Relational data access (charts + metrics across declared joins) ----
+// A chart/metric may reference a field that lives on another dataset. enrichView follows the
+// declared join graph to build a virtual enriched view of the base dataset.
+
+// Base = transactions (has amount/units). Products = dimension (has product label). A chart on the
+// base that references a product concept absent from the base should enrich from the Products dataset.
+const relBaseFields = ["Date", "Country_Code", "Units", "Item_No"];
+const relBaseRows = [
+  ["2024-01-05", "DE", "10", "P1"],
+  ["2024-01-20", "FR", "5", "P1"],
+  ["2024-02-10", "DE", "7", "P2"]
+];
+const relBaseMap = mkMap(relBaseFields, ["time", "geography", "amount", "product"], ["time", "geo", "measure", "identifier"]);
+const relProdFields = ["Item_No", "Item_Name", "Category"];
+const relProdRows = [["P1", "Widget", "Books"], ["P2", "Gadget", "Toys"]];
+const relProdMap = mkMap(relProdFields, ["product", null, null], ["identifier", "dimension", "dimension"]);
+const relDS = {
+  base: { id: "dsBase", name: "Sales", kind: "transactions", hasData: true, mapping: relBaseMap, rowsArr: relBaseRows },
+  prod: { id: "dsProd", name: "Products", kind: "generic", hasData: true, mapping: relProdMap, rowsArr: relProdRows }
+};
+const relJoins = [
+  { id: "j1", from: "dsBase", fromConcept: "product", to: "dsProd", toConcept: "product", index: Core.Joins.buildIndex(relProdRows, relProdMap, "product") }
+];
+const byId = {}; Object.keys(relDS).forEach(k => byId[relDS[k].id] = relDS[k]);
+
+// 7.1 enrichView appends a field from a joined dataset and leaves the base unchanged when present.
+const view = Core.Joins.enrichView({ id: "dsBase", mapping: relBaseMap, rowsArr: relBaseRows }, ["Item_Name"], relJoins, byId);
+if (!view || view.mapping.length !== 5 || view.rowsArr.length !== 3) { console.error("FAIL: enrichView shape", JSON.stringify(view && { map: view.mapping.length, rows: view.rowsArr.length })); process.exit(1); }
+if (view.rowsArr[0][4] !== "Widget" || view.rowsArr[2][4] !== "Gadget") { console.error("FAIL: enrichView joined label", JSON.stringify(view.rowsArr.map(r => r[4]))); process.exit(1); }
+const noView = Core.Joins.enrichView({ id: "dsBase", mapping: relBaseMap, rowsArr: relBaseRows }, ["Units"], relJoins, byId);
+if (noView !== null) { console.error("FAIL: enrichView must return null when no enrichment needed"); process.exit(1); }
+console.log("relational 7.1 enrichView: ok");
+
+// 7.2 A chart on the base dataset splitBy a joined dimension resolves through the join.
+const relChart = Core.Charts.buildSeries({ type: "bar", x: { field: "Date", bucket: "month" }, y: [{ field: "Units", agg: "sum" }], splitBy: "Item_Name" }, view.rowsArr, view.mapping, {});
+if (relChart.datasets.length !== 2) { console.error("FAIL: relational chart splitBy", JSON.stringify(relChart.datasets.map(d => d.label))); process.exit(1); }
+const widget = relChart.datasets.find(d => d.label.indexOf("Widget") === 0);
+if (!widget || widget.data[0] !== 15 || widget.data[1] !== 0) { console.error("FAIL: relational chart Widget data", JSON.stringify(widget)); process.exit(1); }
+console.log("relational 7.2 chart splitBy joined dim: ok");
+
+// 7.3 enrichView leaves the base mapping intact when the field is already present (no false enrichment).
+const baseOnly = Core.Joins.enrichView({ id: "dsBase", mapping: relBaseMap, rowsArr: relBaseRows }, ["Country_Code"], relJoins, byId);
+if (baseOnly !== null) { console.error("FAIL: field already present must not enrich"); process.exit(1); }
+console.log("relational 7.3 no-op when field present: ok");
+
 console.log("\nALL CHECKS PASSED");
 })();

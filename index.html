@@ -169,7 +169,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.10 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.11 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
@@ -1066,7 +1066,10 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     // Enrich `from` rows with a measure column from the joined dataset (left join: unmatched keys → null).
     enrichColumn: function (fromRows, fromMapping, toIndex, toRowsArr, toMapping, join, valueConcept) {
       var srcCol = Entities.columnForConcept(fromMapping, join.fromConcept);
+      // Resolve the value column by concept first, then by field name (concept/header/substring),
+      // so enrichment works for a named field (e.g. "Item_Name") that isn't bound to a concept.
       var valCol = Entities.columnForConcept(toMapping, valueConcept);
+      if (!valCol && Charts && Charts.fieldColumn) { var fc = Charts.fieldColumn(toMapping, valueConcept); if (fc) valCol = fc.name; }
       if (!srcCol || !valCol || !toIndex) return null;
       var ci = this.colIdx(fromMapping, srcCol), vi = this.colIdx(toMapping, valCol);
       if (ci < 0 || vi < 0) return null;
@@ -1076,15 +1079,91 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         var key = v == null ? "" : String(v).trim();
         var vals = toIndex.index[key] || [];
         if (!vals.length) { out.push(null); continue; }
-        // Aggregate (sum) across all matching rows so one-to-many joins don't drop data.
-        var sum = 0, any = false;
+        // Aggregate numeric values (sum) so one-to-many joins don't drop data; for a non-numeric
+        // dimension (e.g. a product label) attach the first matching value instead.
+        var sum = 0, any = false, firstVal = null;
         for (var j = 0; j < vals.length; j++) {
           var n = toRowsArr[vals[j]][vi];
-          if (n != null && !isNaN(n)) { sum += Number(n); any = true; }
+          if (n == null || String(n).trim() === "") continue;
+          if (firstVal == null) firstVal = n;
+          if (!isNaN(n)) { sum += Number(n); any = true; }
         }
-        out.push(any ? sum : null);
+        out.push(any ? sum : (firstVal != null ? firstVal : null));
       }
       return out;
+    },
+
+    // ---- Relational enrichment (Phase 5/6: charts + metrics across declared joins) ----
+    // A field may live on another dataset reachable through a declared join. `fieldExists`
+    // resolves a concept/header/substring the same way the chart + metric engines do.
+    fieldExists: function (mapping, field) {
+      if (!mapping || !field) return false;
+      return Charts.fieldColumn(mapping, field) != null;
+    },
+
+    // Enrich a base dataset's rows with `field` (a measure/dimension not present on the base)
+    // by following declared joins, recursively, to a dataset that has it. Returns an array of
+    // values aligned to baseRows (summed over one-to-many matches; null when unmatched), or null
+    // if the field cannot be reached.
+    enrichField: function (base, field, joins, datasetsById, visited) {
+      base = base || {};
+      visited = visited || {};
+      var baseRows = base.rowsArr || [], baseMapping = base.mapping || [];
+      if (Joins.fieldExists(baseMapping, field)) {
+        var idx0 = Joins.colIdx(baseMapping, Charts.fieldColumn(baseMapping, field).name);
+        return baseRows.map(function (r) { return r[idx0]; });
+      }
+      if (visited[base.id]) return null;
+      visited[base.id] = true;
+      var joins = joins || [];
+      for (var i = 0; i < joins.length; i++) {
+        var j = joins[i];
+        // A join is directed, but enrichment may traverse it either way: the base may be the
+        // "from" side (join out to a partner) or the "to" side (join back from a partner).
+        var fromSide = j.from === base.id, toSide = j.to === base.id;
+        if (!fromSide && !toSide) continue;
+        var partnerId = fromSide ? j.to : j.from;
+        var baseConcept = fromSide ? j.fromConcept : j.toConcept;
+        var partnerConcept = fromSide ? j.toConcept : j.fromConcept;
+        var partner = datasetsById && datasetsById[partnerId];
+        if (!partner || !partner.mapping) continue;
+        // If the field is not on the partner, try to reach it through further joins.
+        var toRows = partner.rowsArr, toMapping = partner.mapping;
+        if (!Joins.fieldExists(toMapping, field)) {
+          var sub = Joins.enrichField({ id: partnerId, rowsArr: toRows, mapping: toMapping }, field, joins, datasetsById, visited);
+          if (!sub) continue;
+          toRows = toRows.map(function (r, k) { return r.slice().concat([sub[k]]); });
+          toMapping = toMapping.concat([{ name: field, idx: toMapping.length, role: "measure", type: "number", concept: field, synthetic: true }]);
+        }
+        // Left-join base rows onto the (possibly enriched) partner over the join concept.
+        // Normalize the join so `fromConcept` is on the base and `toConcept` on the partner.
+        var normJoin = { fromConcept: baseConcept, toConcept: partnerConcept };
+        var toIndex = Joins.buildIndex(toRows, toMapping, partnerConcept);
+        var values = Joins.enrichColumn(baseRows, baseMapping, toIndex, toRows, toMapping, normJoin, field);
+        if (values) return values;
+      }
+      return null;
+    },
+
+    // Build a virtual enriched dataset view for a base dataset. `fields` is the set of
+    // concepts/headers the chart or metric needs. Returns { rowsArr, mapping } with any missing
+    // field appended as a synthetic column, or null when nothing needed enriching.
+    enrichView: function (base, fields, joins, datasetsById) {
+      if (!base || !base.mapping || !fields || !fields.length) return null;
+      var rows = (base.rowsArr || []).map(function (r) { return r.slice(); });
+      var mapping = (base.mapping || []).slice();
+      var changed = false;
+      for (var f = 0; f < fields.length; f++) {
+        var field = fields[f];
+        if (Joins.fieldExists(mapping, field)) continue;
+        var values = Joins.enrichField(base, field, joins, datasetsById, {});
+        if (!values) continue;
+        var colIdx = mapping.length;
+        for (var i = 0; i < rows.length; i++) rows[i].push(values[i] == null ? null : values[i]);
+        mapping.push({ name: field, idx: colIdx, role: "measure", type: "number", concept: field, synthetic: true });
+        changed = true;
+      }
+      return changed ? { rowsArr: rows, mapping: mapping } : null;
     }
   };
 
@@ -2676,7 +2755,14 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
             var ml = document.createElement("div");
             ml.style.cssText = "display:flex;flex-wrap:wrap;gap:6px";
             Core.Metrics.metricPacks(d.kind).forEach(function (def) {
-              var r = Core.Metrics.computeMetric(def, d.rowsArr, d.mapping, { datasetId: d.id });
+              // Enrich across declared joins so a metric on this dataset can use a measure that
+              // lives on a related dataset (relational data access, not single-table only).
+              var metricSrc = { rows: d.rowsArr, mapping: d.mapping };
+              if (def.field) {
+                var mv = enrichViewFor(d, [def.field]);
+                if (mv) metricSrc = { rows: mv.rowsArr, mapping: mv.mapping };
+              }
+              var r = Core.Metrics.computeMetric(def, metricSrc.rows, metricSrc.mapping, { datasetId: d.id });
               var chip = document.createElement("div");
               chip.style.cssText = "font-size:.72rem;padding:2px 8px;border:1px solid var(--border,#8884);border-radius:10px";
               chip.textContent = def.label + ": " + (r.available ? r.formatted : "n/a (" + r.reason + ")");
@@ -2911,7 +2997,12 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     var rec = currentChartDataset();
     if (!rec || !rec.mapping) { errEl.style.display = "inline"; errEl.textContent = "Load a dataset first."; return; }
     var spec = readChartSpecFromForm();
-    var v = Core.Charts.validateSpec(spec, rec.mapping);
+    // Validate against the ENRICHED mapping so a chart can use a field that lives on a
+    // related (joined) dataset — not just the base dataset's own columns.
+    var vMap = rec.mapping;
+    var ev = enrichViewFor(rec, chartWantedFields(spec), rec.rowsArr);
+    if (ev) vMap = ev.mapping;
+    var v = Core.Charts.validateSpec(spec, vMap);
     if (!v.valid) { errEl.style.display = "inline"; errEl.textContent = v.errors.join("; "); return; }
     errEl.style.display = "none";
     savedCharts.push({ id: spec.id, spec: spec });
@@ -2920,9 +3011,35 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   });
 
   // Render one saved chart spec into its own canvas via the shared renderer.
-  function renderChartFromSpec(rec, spec) {
+  // ---- Relational data access (charts + metrics across declared joins) ----
+  // A chart or metric may reference a field that lives on another dataset. `enrichViewFor`
+  // follows the declared join graph to build a virtual enriched view of the base dataset.
+  function chartWantedFields(spec) {
+    var fields = [];
+    function add(f) { if (f && fields.indexOf(f) === -1) fields.push(f); }
+    if (spec && spec.x) { if (spec.x.field && !spec.x.bucket) add(spec.x.field); }
+    (spec && spec.y || []).forEach(function (yd) { if (yd.field) add(yd.field); });
+    if (spec && spec.splitBy) add(spec.splitBy);
+    return fields;
+  }
+  function enrichViewFor(rec, fields, baseRows) {
+    if (!rec || !rec.mapping || !fields || !fields.length) return null;
+    var byId = {};
+    datasets.forEach(function (d) { byId[d.id] = d; });
+    return Core.Joins.enrichView({ id: rec.id, mapping: rec.mapping, rowsArr: baseRows || rec.rowsArr }, fields, declaredJoins, byId);
+  }
+  // Resolve the rows+mapping a chart should draw from, enriching across joins when needed.
+  // Enrichment applies to the FILTERED rows so the current filter bus is respected.
+  function chartSource(rec, spec) {
     var fb = filteredRowsFor(rec);
-    var series = Core.Charts.buildSeries(spec, fb.rows, rec.mapping, { aggMode: store.get("aggMode") });
+    var view = enrichViewFor(rec, chartWantedFields(spec), fb.rows);
+    if (view) return { rows: view.rowsArr, mapping: view.mapping, fb: fb };
+    return { rows: fb.rows, mapping: rec.mapping, fb: fb };
+  }
+
+  function renderChartFromSpec(rec, spec) {
+    var src = chartSource(rec, spec);
+    var series = Core.Charts.buildSeries(spec, src.rows, src.mapping, { aggMode: store.get("aggMode") });
     if (spec.type === "table") return { html: tableHtml(series) };
     return series;
   }
@@ -2939,8 +3056,8 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   // Draw a saved chart into a target canvas element.
   function drawSavedChart(canvas, rec, spec) {
     if (!canvas || !rec) return;
-    var fb = filteredRowsFor(rec);
-    var series = Core.Charts.buildSeries(spec, fb.rows, rec.mapping, { aggMode: store.get("aggMode") });
+    var src = chartSource(rec, spec);
+    var series = Core.Charts.buildSeries(spec, src.rows, src.mapping, { aggMode: store.get("aggMode") });
     if (spec.type === "table") { canvas.parentNode.innerHTML = tableHtml(series); return; }
     var th = chartTheme();
     var chartType = spec.type;
@@ -2969,7 +3086,8 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       head.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:.82rem";
       var t = document.createElement("span");
       t.style.cssText = "font-weight:600";
-      t.textContent = (c.spec.title || c.spec.type) + " · " + (c.spec.x && c.spec.x.field ? c.spec.x.field : "—") + " → " + (c.spec.y && c.spec.y[0] ? c.spec.y[0].field + " (" + c.spec.y[0].agg + ")" : "—");
+      var splitTxt = c.spec.splitBy ? " by " + c.spec.splitBy : "";
+      t.textContent = (c.spec.title || c.spec.type) + " · " + (c.spec.x && c.spec.x.field ? c.spec.x.field : "—") + " → " + (c.spec.y && c.spec.y[0] ? c.spec.y[0].field + " (" + c.spec.y[0].agg + ")" : "—") + splitTxt;
       head.appendChild(t);
       [["↑", function () { if (i > 0) { savedCharts.splice(i - 1, 0, savedCharts.splice(i, 1)[0]); renderChartList(); renderAll(); } }],
        ["↓", function () { if (i < savedCharts.length - 1) { savedCharts.splice(i + 1, 0, savedCharts.splice(i, 1)[0]); renderChartList(); renderAll(); } }],
