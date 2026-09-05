@@ -68,10 +68,10 @@ const badDate = Core.parseCsvData(header, [["99999999","1","AT","5"],["20170817"
 if (badDate.rows.length !== 1 || !/skipped/i.test(badDate.errors[0])) { console.error("FAIL: invalid date handling"); process.exit(1); }
 
 // 9. Phase 0: all named modules present on the namespace (eleven after Phases 2-3)
-for (const modName of ["Schema", "Datasets", "Entities", "Joins", "Store", "Metrics", "Charts", "Insight", "Text", "Report", "AI"]) {
+for (const modName of ["Schema", "Datasets", "Entities", "Joins", "Store", "Metrics", "Charts", "Insight", "Text", "Report", "AI", "Tools"]) {
   if (!Core[modName] || typeof Core[modName] !== "object") { console.error(`FAIL: module ${modName} missing on SalesCore`); process.exit(1); }
 }
-console.log("modules present:", ["Schema","Datasets","Entities","Joins","Store","Metrics","Charts","Insight","Text","Report","AI"].join(", "));
+console.log("modules present:", ["Schema","Datasets","Entities","Joins","Store","Metrics","Charts","Insight","Text","Report","AI","Tools"].join(", "));
 
 // 10. Phase 0: HTML sanitizer strips script/style tags, on* attrs, javascript: URLs
 const dirty = '<script>alert(1)</script><div onclick="x()" style="color:red">ok</div><a href="javascript:void(0)">j</a><style>p{}</style>';
@@ -500,4 +500,92 @@ const deI = catSeries.labels.indexOf("DE");
 if (catSeries.datasets[0].data[deI] !== 17) { console.error("FAIL: categorical x DE sum (10+7)", JSON.stringify(catSeries.datasets[0].data)); process.exit(1); }
 console.log("phase 5.6 categorical x: ok");
 
+// ---- Phase 6: AI as an analyst with tools (PRD test additions) ----
+
+// 6.1 The fallback JSON protocol parses a valid tool block.
+const tb = Core.Tools.parseToolBlock('Some prose\n```json\n{"tool":"query","args":{"dataset":"hd","measures":[{"field":"Units","agg":"sum"}]}}\n```');
+if (!tb || tb.tool !== "query" || !tb.args || !tb.args.measures) { console.error("FAIL: parseToolBlock valid block", JSON.stringify(tb)); process.exit(1); }
+console.log("phase 6.1 parseToolBlock: ok");
+
+// 6.2 A malformed block produces a corrective message rather than a crash.
+const badTool = Core.Tools.parseToolBlock('```json\n{"tool": "query", "args": {}\n```');
+if (!badTool || !badTool.error) { console.error("FAIL: malformed tool block must yield a corrective error", JSON.stringify(badTool)); process.exit(1); }
+const notool = Core.Tools.parseToolBlock('{"args": {}}');
+if (!notool || !notool.error) { console.error("FAIL: block missing 'tool' must be rejected", JSON.stringify(notool)); process.exit(1); }
+const none = Core.Tools.parseToolBlock("Just a plain answer, no tool call.");
+if (none !== null) { console.error("FAIL: no tool block must return null", JSON.stringify(none)); process.exit(1); }
+console.log("phase 6.2 malformed block: ok");
+
+// 6.3/6.4/6.5 Tool loop semantics (async toolLoop). Wrap in an async IIFE.
+const ctx6 = {
+  datasets: [{ id: "hd", name: "Historical", kind: "transactions", rowCount: 4, hasData: true, mapping: m4Map, rowsArr: m4Rows }],
+  createChart: (spec) => "chart-1",
+  getChartData: (id) => id === "chart-1" ? { labels: ["a"], datasets: [{ label: "x", data: [1] }] } : null
+};
+(async () => {
+let calls = 0;
+const loopResult = await Core.Tools.toolLoop({
+  maxTurns: 4,
+  context: ctx6,
+  messages: [{ role: "user", content: "What's the total?" }],
+  callModel: (msgs) => {
+    calls++;
+    if (calls === 1) return { content: '{"tool":"query","args":{"dataset":"hd","measures":[{"field":"Units","agg":"sum"}]}}' };
+    return { content: "The total units are 22." };
+  }
+});
+if (loopResult.turns !== 1 || loopResult.results.length !== 1 || loopResult.results[0].tool !== "query") { console.error("FAIL: toolLoop should run one tool then finish", JSON.stringify(loopResult)); process.exit(1); }
+// No dimensions requested -> one aggregate row with the summed Units (10+5+7+0 = 22).
+const qrows = loopResult.results[0].result.rows;
+if (qrows.length !== 1 || qrows[0].Units !== 22) { console.error("FAIL: query tool aggregate result", JSON.stringify(qrows)); process.exit(1); }
+if (!loopResult.results[0].result.resultId) { console.error("FAIL: query must return a resultId"); process.exit(1); }
+if (!/22/.test(loopResult.content)) { console.error("FAIL: final answer content", loopResult.content); process.exit(1); }
+console.log("phase 6.3 toolLoop executes: ok");
+
+// 6.4 The loop terminates at the cap and reports hitCap.
+let capCalls = 0;
+const capResult = await Core.Tools.toolLoop({
+  maxTurns: 2,
+  context: ctx6,
+  messages: [{ role: "user", content: "keep going" }],
+  callModel: () => { capCalls++; return { content: '{"tool":"list_datasets","args":{}}' }; }
+});
+if (!capResult.hitCap || capResult.turns !== 2 || capCalls !== 2) { console.error("FAIL: toolLoop must stop at maxTurns and set hitCap", JSON.stringify({ turns: capResult.turns, hitCap: capResult.hitCap, calls: capCalls })); process.exit(1); }
+console.log("phase 6.4 loop cap: ok");
+
+// 6.5 A malformed tool block mid-loop yields a corrective message to the model and continues.
+let corrCalls = 0;
+const corrResult = await Core.Tools.toolLoop({
+  maxTurns: 4,
+  context: ctx6,
+  messages: [{ role: "user", content: "go" }],
+  callModel: () => {
+    corrCalls++;
+    if (corrCalls === 1) return { content: '{"tool": "list_datasets", "args": {}}' }; // valid
+    if (corrCalls === 2) return { content: '{"tool": "broken", args: {}}' }; // malformed (unquoted key -> JSON.parse fails)
+    return { content: "done" };
+  }
+});
+// Turn 1 valid tool, turn 2 malformed -> corrective, turn 3 final answer. Tool turns=2 (the answer isn't a tool turn).
+if (corrResult.turns !== 2 || corrResult.hitCap || corrResult.results.length !== 1) { console.error("FAIL: malformed mid-loop should not crash; should continue", JSON.stringify(corrResult)); process.exit(1); }
+if (!/done/.test(corrResult.content)) { console.error("FAIL: loop should reach the final answer after a corrective message", corrResult.content); process.exit(1); }
+console.log("phase 6.5 malformed mid-loop: ok");
+
+// 6.6 describe_schema returns column type/role/distinct/samples.
+const dsRes = Core.Tools.runTool("describe_schema", { datasetId: "hd" }, ctx6);
+if (!dsRes.columns || dsRes.columns.length !== 4 || dsRes.columns[0].role !== "time") { console.error("FAIL: describe_schema", JSON.stringify(dsRes)); process.exit(1); }
+console.log("phase 6.6 describe_schema: ok");
+
+// 6.7 openProfile produces a deterministic profile (total, top, coverage) without blocking on the model.
+const objRows = [
+  { date: new Date("2024-01-05"), articleId: "A1", countryCode: "DE", units: 10 },
+  { date: new Date("2024-01-20"), articleId: "A1", countryCode: "FR", units: 5 },
+  { date: new Date("2024-02-10"), articleId: "B2", countryCode: "DE", units: 7 },
+  { date: new Date("2024-03-01"), articleId: "B2", countryCode: "AT", units: 0 }
+];
+const prof = Core.Tools.openProfile(objRows, m4Map, "month");
+if (prof.total !== 22 || !prof.top || !prof.coverage || !prof.coverage.product || !prof.coverage.geography) { console.error("FAIL: openProfile", JSON.stringify(prof)); process.exit(1); }
+console.log("phase 6.7 openProfile: ok");
+
 console.log("\nALL CHECKS PASSED");
+})();

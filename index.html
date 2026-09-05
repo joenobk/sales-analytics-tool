@@ -169,7 +169,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.09 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.10 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
@@ -1812,6 +1812,193 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     return { type: spec.type, labels: labels, datasets: datasets, title: spec.title || "" };
   }
   Charts.buildSeries = buildSeries;
+
+  // ---- Phase 6: AI as an analyst with tools ----
+  // Replace "send the whole cube as text" with a tool loop. The model requests computations,
+  // the app performs them deterministically, and the model reasons over real returned values.
+  // Two transports: native tool/function calling where supported; otherwise a constrained
+  // protocol where the model emits a single fenced JSON block {"tool": "...", "args": {...}}.
+  var Tools = {};
+  var _toolSeq = 0;
+
+  // Tool registry: name, description, and a deterministic executor. Each executor takes
+  // (args, ctx) where ctx = {datasets:[...], charts:[...], createChart(spec)->id, getChartData(id)}.
+  var TOOL_DEFS = [
+    { name: "list_datasets", description: "List every loaded dataset: id, name, kind, row count, date range." },
+    { name: "describe_schema", description: "Describe a dataset's columns: type, role, distinct count, null count, sample values." },
+    { name: "query", description: "Run a deterministic aggregate query over one dataset. Returns compact rows plus a resultId. The model must cite this resultId for any number it reports." },
+    { name: "compare_periods", description: "Compare a measure for a period against the prior period and one year earlier: current, prior, yearAgo, delta, deltaPct." },
+    { name: "create_chart", description: "Validate and render a chart spec (see the chart contract). Returns the chart id." },
+    { name: "get_chart_data", description: "Return the exact series behind a rendered chart so the model can comment on what is on screen." },
+    { name: "extract_text_insights", description: "Run text extraction (Phase 8) over a text column. Returns taxonomy, sentiment, and theme counts." }
+  ];
+  Tools.TOOL_DEFS = TOOL_DEFS;
+
+  // Constrained protocol parser: extract a single fenced JSON block {"tool": "...", "args": {...}}.
+  // Returns {tool, args} on success, {error} on a malformed-but-present block, null when absent.
+  function parseToolBlock(text) {
+    var s = String(text == null ? "" : text);
+    var fenced = /\{[\s\S]*\}/.exec(s);
+    if (!fenced) return null;
+    var raw = fenced[0];
+    var obj;
+    try { obj = JSON.parse(raw); } catch (e) {
+      // A JSON-looking block that fails to parse is a malformed tool call → corrective message.
+      return { error: "Could not parse tool JSON: " + e.message };
+    }
+    if (typeof obj !== "object" || !obj.tool) return { error: "Tool block must be an object with a 'tool' string and an 'args' object." };
+    if (typeof obj.tool !== "string") return { error: "'tool' must be a string." };
+    return { tool: obj.tool, args: obj.args || {} };
+  }
+  Tools.parseToolBlock = parseToolBlock;
+
+  // Resolve a dataset in ctx by id, or default to the first data-bearing dataset.
+  function ctxDataset(ctx, id) {
+    var ds = (ctx && ctx.datasets) || [];
+    if (id) for (var i = 0; i < ds.length; i++) if (ds[i].id === id) return ds[i];
+    for (var j = 0; j < ds.length; j++) if (ds[j].hasData !== false) return ds[j];
+    return null;
+  }
+
+  // Evaluate one tool against the app-provided context.
+  function runTool(name, args, ctx) {
+    args = args || {};
+    ctx = ctx || {};
+    var ds = ctxDataset(ctx, args.datasetId);
+    switch (name) {
+      case "list_datasets": {
+        var out = (ctx.datasets || []).map(function (d) {
+          return { id: d.id, name: d.name, kind: d.kind, rowCount: d.rowCount || 0, dateRange: d.dateRange || null, hasData: d.hasData !== false };
+        });
+        return { datasets: out };
+      }
+      case "describe_schema": {
+        if (!ds) return { error: "Unknown or missing datasetId '" + args.datasetId + "'." };
+        var cols = (ds.mapping || []).map(function (c) {
+          return { name: c.name, type: c.type, role: c.role, concept: c.concept || null, distinct: c.distinctCount != null ? c.distinctCount : null, nulls: c.nullCount != null ? c.nullCount : null, samples: c.samples || [] };
+        });
+        return { datasetId: ds.id, name: ds.name, rowCount: (ds.rowsArr || []).length, columns: cols };
+      }
+      case "query": {
+        if (!ds || !ds.mapping) return { error: "No dataset for query; pass datasetId or load a dataset first." };
+        var rows = ds.rowsArr || [];
+        var limit = args.limit != null ? args.limit : 100;
+        var dims = (args.dimensions || []).slice();
+        var measures = (args.measures || []).slice();
+        // Group rows by the requested dimensions.
+        var key = function (r) { return dims.map(function (d) { var v = Metrics.rowValue(r, ds.mapping, d); return v == null ? "" : String(v); }).join("¦"); };
+        var groups = new Map();
+        rows.forEach(function (r) {
+          var k = key(r);
+          if (!groups.has(k)) { groups.set(k, { key: k, rows: [] }); }
+          groups.get(k).rows.push(r);
+        });
+        var resultId = "r" + (++_toolSeq);
+        var out = [];
+        groups.forEach(function (g) {
+          var row = {};
+          dims.forEach(function (d, i) { var v = Metrics.rowValue(g.rows[0], ds.mapping, d); row[d] = v == null ? null : v; });
+          measures.forEach(function (m) {
+            var v = Metrics.applyAgg(g.rows.map(function (r) { return Metrics.rowValue(r, ds.mapping, m.field); }), m.agg);
+            row[m.field] = v == null ? null : v;
+          });
+          out.push(row);
+        });
+        // sort
+        if (args.sort && args.sort.field) {
+          var sf = args.sort.field, dir = args.sort.dir === "desc" ? -1 : 1;
+          out.sort(function (a, b) { var av = a[sf], bv = b[sf]; return (av == null ? 0 : av) < (bv == null ? 0 : bv) ? -dir : (av > bv ? dir : 0); });
+        }
+        var truncated = out.length > limit;
+        if (truncated) out = out.slice(0, limit);
+        return { resultId: resultId, datasetId: ds.id, rows: out, count: out.length, truncated: truncated, note: truncated ? "Rows capped at " + limit + " — call again with a narrower filter or higher limit." : null };
+      }
+      case "compare_periods": {
+        if (!ds || !ds.mapping) return { error: "No dataset for compare_periods." };
+        var fromMs = args.fromMs, toMs = args.toMs;
+        if (fromMs == null || toMs == null) return { error: "compare_periods requires fromMs and toMs." };
+        var spec = { field: args.metric || "amount", agg: args.agg || "sum" };
+        var cmp = Metrics.comparePeriods(ds.rowsArr, ds.mapping, spec, { fromMs: fromMs, toMs: toMs, datasetId: ds.id });
+        return { metric: spec.field, agg: spec.agg, current: cmp.current.value, prior: cmp.prior ? cmp.prior.value : null, yearAgo: cmp.yearAgo ? cmp.yearAgo.value : null, deltaAbs: cmp.deltaAbs, deltaPct: cmp.deltaPct };
+      }
+      case "create_chart": {
+        var spec = args.spec || args;
+        var v = Charts.validateSpec(spec, ds ? ds.mapping : null);
+        if (!v.valid) return { error: "Invalid chart spec: " + v.errors.join("; ") };
+        if (!ctx.createChart) return { error: "Chart creation is not available in this context." };
+        var id = ctx.createChart(spec);
+        return { chartId: id, title: spec.title || spec.type };
+      }
+      case "get_chart_data": {
+        if (!ctx.getChartData) return { error: "Chart data access is not available in this context." };
+        var data = ctx.getChartData(args.chartId);
+        if (!data) return { error: "Unknown chartId '" + args.chartId + "'." };
+        return data;
+      }
+      case "extract_text_insights": {
+        if (!ds || !ds.mapping) return { error: "No dataset for extract_text_insights." };
+        var col = Charts.fieldColumn(ds.mapping, args.field);
+        if (!col) return { error: "Unknown text field '" + args.field + "'." };
+        return { datasetId: ds.id, field: args.field, taxonomy: [], sentiment: null, themes: [], note: "Phase 8 text pipeline not yet implemented." };
+      }
+      default:
+        return { error: "Unknown tool '" + name + "'. Valid tools: " + TOOL_DEFS.map(function (t) { return t.name; }).join(", ") };
+    }
+  }
+  Tools.runTool = runTool;
+
+  // The constrained tool loop. callModel(messages) -> {content} (may be async). The app supplies
+  // callModel. Terminates at maxTurns; a malformed tool block produces a corrective message, not a crash.
+  async function toolLoop(opts) {
+    opts = opts || {};
+    var maxTurns = opts.maxTurns != null ? opts.maxTurns : 6;
+    var messages = (opts.messages || []).slice();
+    var ctx = opts.context || {};
+    var results = [];
+    var turns = 0;
+    while (turns < maxTurns) {
+      var resp = await opts.callModel(messages);
+      var content = resp && resp.content != null ? String(resp.content) : "";
+      var block = parseToolBlock(content);
+      if (!block) return { content: content, turns: turns, results: results, hitCap: false };
+      if (block.error) {
+        messages.push({ role: "assistant", content: content });
+        messages.push({ role: "user", content: "Your previous tool call was malformed: " + block.error + ". Emit exactly one fenced JSON block {\"tool\":\"<name>\",\"args\":{...}}. Do not add prose." });
+        turns++;
+        continue;
+      }
+      var result = runTool(block.tool, block.args, ctx);
+      results.push({ tool: block.tool, args: block.args, result: result });
+      messages.push({ role: "assistant", content: content });
+      messages.push({ role: "tool", name: block.tool, content: JSON.stringify(result) });
+      turns++;
+    }
+    return { content: "(stopped after " + turns + " tool turns — set a higher maxTurns to continue)", turns: turns, results: results, hitCap: true };
+  }
+  Tools.toolLoop = toolLoop;
+
+  // Deterministic opening profile for a dataset (rendered immediately, never blocks on the model).
+  // `rows` are the normalized object rows from the app's filtered view ({date, articleId, countryCode, units}).
+  function openProfile(rows, mapping, aggMode) {
+    var stats = computeStats(rows, aggMode);
+    // Coverage presence: a concept is present if a column in the mapping is bound to it.
+    var bound = Entities.bindConcepts(mapping || []);
+    var cov = {};
+    Entities.CONCEPTS.forEach(function (c) {
+      var has = bound.some(function (col) { return col.concept === c; });
+      cov[c] = { present: !!has };
+    });
+    var profile = {
+      rowCount: rows.length, dateRange: stats.dateMin && stats.dateMax ? [stats.dateMin, stats.dateMax] : null,
+      total: stats.total, top: stats.topProducts[0] || null, bottom: stats.bottomProduct || null,
+      trendSlope: stats.slopePerBucket, seasonPeak: stats.seasonPeak ? stats.seasonPeak.name : null,
+      coverage: cov, top5Share: null
+    };
+    try { var c = Metrics.concentration(rows, mapping || [], "product", "amount", 5); profile.top5Share = c.topShare; } catch (e) {}
+    return profile;
+  }
+  Tools.openProfile = openProfile;
+
   var Insight = {};
 
   // Optional coverage section: tells the model which concepts are absent or only partially
@@ -1938,7 +2125,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   AI.filterKey = filterKey;
 
   // ---- Export all modules + legacy aliases on the core namespace ----
-  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI };
+  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools };
   // Legacy top-level aliases (backward compat with existing tests)
   api.normalizeHeader = normalizeHeader;
   api.parseDateValue = parseDateValue;
@@ -3033,6 +3220,43 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     hist.scrollTop = 0;
   }
 
+  // Build the tool context the AI can call: datasets (raw rows + mapping), plus chart
+  // creation/lookup so create_chart / get_chart_data round-trip through the shared renderer.
+  function buildToolContext() {
+    return {
+      datasets: datasets.filter(function (d) { return d.hasData; }).map(function (d) {
+        return { id: d.id, name: d.name, kind: d.kind, rowCount: (d.rowsArr || []).length, hasData: true, mapping: d.mapping, rowsArr: d.rowsArr };
+      }),
+      createChart: function (spec) {
+        var id = "c" + Date.now().toString(36);
+        var rec = datasetById(activeId) || datasets[0];
+        if (rec) { savedCharts.push({ id: id, spec: spec, datasetId: rec.id }); renderChartList(); }
+        return id;
+      },
+      getChartData: function (id) {
+        for (var i = 0; i < savedCharts.length; i++) {
+          if (savedCharts[i].id === id) {
+            var rec = datasetById(savedCharts[i].spec.datasetId) || datasetById(activeId) || datasets[0];
+            if (rec) { var s = Core.Charts.buildSeries(savedCharts[i].spec, filteredRowsFor(rec).rows, rec.mapping, { aggMode: store.get("aggMode") }); return { type: s.type, labels: s.labels, datasets: s.datasets }; }
+          }
+        }
+        return null;
+      }
+    };
+  }
+
+  // One model call for the tool loop (non-streaming; the loop drives multiple turns).
+  async function callModelForTools(cfg, messages) {
+    var res = await fetch(cfg.baseUrl.replace(/\/+$/, "") + "/chat/completions", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, cfg.apiKey ? { Authorization: "Bearer " + cfg.apiKey } : {}),
+      body: JSON.stringify({ model: cfg.model, temperature: cfg.temperature, messages: messages })
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    var json = await res.json();
+    return { content: (json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || "(empty response)" };
+  }
+
   async function analyze() {
       if (view === "overview" || !activeId) { showError("The overview has no single data view — open a dataset tab to analyze."); return; }
       var rows = filteredRows();
@@ -3046,23 +3270,22 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       return;
     }
 
-    // Conversation caching: if the filtered view is unchanged since the last analysis,
-    // follow-up questions are sent WITHOUT re-sending the data payload.
-    var key = filterKey();
+    // Conversation caching keyed on the full state (datasets, filters, chart set).
+    var key = JSON.stringify({ f: filterKey(), d: datasets.map(function (d) { return d.id; }), c: savedCharts.length });
     var aiCtx = store.get("aiCtx");
     if (!aiCtx || aiCtx.key !== key) {
-      // Full visibility: send aggregate summary + complete month x product x country dataset.
-      aiCtx = { key: key, messages: [{ role: "user", content: Core.buildAiPrompt(stats, store.get("aggMode"), lastLoad ? lastLoad.mapping : null, lastLoad ? lastLoad.rowsArr : null) + "\n\n" + Core.buildFullDataPayload(rows) }] };
+      var systemPrompt = cfg.systemPrompt ||
+        "You are a senior sales analyst. Use the available tools (list_datasets, describe_schema, query, compare_periods, create_chart, get_chart_data) to compute figures yourself. " +
+        "Never state a number you did not get from a tool result. Cite the resultId for any figure you report. " +
+        "Tools are available; call them as a fenced JSON block {\"tool\":\"...\",\"args\":{...}}.";
+      aiCtx = { key: key, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: Core.buildAiPrompt(stats, store.get("aggMode"), lastLoad ? lastLoad.mapping : null, lastLoad ? lastLoad.rowsArr : null) }] };
     }
-    aiCtx.messages.push({ role: "user", content: question ? question : "Provide your analysis of this data." });
+    aiCtx.messages.push({ role: "user", content: question ? question : "Provide your analysis of this data using the tools." });
     store.set("aiCtx", aiCtx);
 
     var hist = aiHistoryEl();
     var pending = document.createElement("div");
     pending.className = "ai-entry";
-    // Status line: spinner + phase label + live elapsed timer. The timer is the key
-    // "still working" signal, since a non-streaming request gives no finer status —
-    // for local models most of this time is model warm-up (15s+) then processing.
     pending.innerHTML = '<div class="ai-status"><div class="spinner"></div><span class="phase">Preparing…</span><span class="elapsed"></span></div>' +
       '<div class="muted" style="margin-top:6px;font-size:.78rem">It may take about a minute just to load the model, and several minutes to analyze large data sets. Please wait — do not close or refresh this page.</div>';
     hist.insertBefore(pending, hist.firstChild);
@@ -3079,26 +3302,24 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     btn.textContent = "Analyzing…";
 
     try {
-      var bodyStr = JSON.stringify({
-        model: cfg.model,
-        temperature: cfg.temperature,
-        messages: [{ role: "system", content: cfg.systemPrompt || "You are a senior sales analyst." }].concat(aiCtx.messages)
+      phaseEl.textContent = "Asking the model to analyze (tool loop)…";
+      var toolCtx = buildToolContext();
+      var loopRes = await Core.Tools.toolLoop({
+        maxTurns: 6,
+        context: toolCtx,
+        messages: aiCtx.messages,
+        callModel: function (msgs) { return callModelForTools(cfg, msgs); }
       });
-      // The single await below covers send + model warm-up + processing (a non-streaming
-      // request returns headers only when done), so label it as the whole in-flight phase.
-      phaseEl.textContent = "Analyzing… (" + Math.round(bodyStr.length / 1024) + " KB sent to model)";
-      var res = await fetch(cfg.baseUrl.replace(/\/+$/, "") + "/chat/completions", {
-        method: "POST",
-        headers: Object.assign({ "Content-Type": "application/json" }, cfg.apiKey ? { Authorization: "Bearer " + cfg.apiKey } : {}),
-        body: bodyStr
+      // Record every tool that ran so the user can see arguments + result sizes.
+      var toolLog = loopRes.results.map(function (r) {
+        var sz = JSON.stringify(r.result).length;
+        return "- " + r.tool + " → " + Math.round(sz / 1024) + " KB";
       });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      phaseEl.textContent = "Receiving response…";
-      var json = await res.json();
-      var answer = (json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || "(empty response)";
+      var answer = loopRes.content;
+      if (loopRes.hitCap) answer += "\n\n> _(Reached the tool-turn limit; ask a narrower question.)_";
       aiCtx.messages.push({ role: "assistant", content: answer });
       pending.remove();
-      addAiEntry(question, answer, false);
+      addAiEntry(question, answer + (toolLog.length ? "\n\n**Tools used:**\n" + toolLog.join("\n") : ""), false);
     } catch (e) {
       pending.remove();
       addAiEntry(question, Core.buildStatisticalFallback(stats) + "\n\n[AI request failed after " + Math.floor((Date.now() - t0) / 1000) + "s: " + e.message + "]", true);
