@@ -137,6 +137,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   .ai-entry.empty-note { color: var(--muted); font-style: italic; }
   .ai-q { font-weight: 600; margin-bottom: 8px; white-space: pre-wrap; border-left: 3px solid var(--accent); padding-left: 8px; }
   .ai-a { white-space: normal; }
+  .cite-chip { display: inline-block; background: var(--code-bg, #e2e8f0); border: 1px solid var(--border, #8884); border-radius: 9px; padding: 0 7px; font-size: .72rem; font-family: ui-monospace, monospace; cursor: help; vertical-align: middle; }
   /* Markdown rendering */
   .md p { margin: 0 0 10px; }
   .md h1, .md h2, .md h3, .md h4 { font-size: .95rem; margin: 12px 0 6px; }
@@ -169,7 +170,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.11 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.12 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
@@ -246,6 +247,8 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         <div class="card kpi-card"><div class="label">Trend</div><div class="value" id="kpiTrend">–</div><div class="sub" id="kpiTrendSub"></div></div>
         <div class="card kpi-card"><div class="label">Seasonality</div><div class="value" id="kpiSeason">–</div><div class="sub" id="kpiSeasonSub"></div></div>
       </div>
+      <button id="showMathBtn" type="button" style="font-size:.78rem;margin:4px 0 8px">Show the math</button>
+      <div id="mathPanel" class="muted" style="display:none;font-size:.78rem;margin-bottom:8px"></div>
 
       <div class="card">
         <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">Units sold over time<button id="exportCsvBtn" type="button" title="Download the current filtered rows as CSV (stays in your browser)">Export CSV</button></div>
@@ -2078,6 +2081,108 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   }
   Tools.openProfile = openProfile;
 
+  // ---- Phase 7: Verification layer, so the source data is the authority ----
+  // Cited figures (resultId chips), automated claim check, empty-result honesty,
+  // provenance footers, and a definition registry. The core logic is deterministic.
+  var Verify = {};
+  var CLAIM_TOLERANCE = 0.01; // 1% relative tolerance for matching a number to a tool result.
+
+  // Extract every number from model text (decimals, thousands separators, percentages).
+  function extractNumbers(text) {
+    var nums = [], re = /[-+]?\d[\d,]*(?:\.\d+)?%?/g, m;
+    var s = String(text == null ? "" : text);
+    while ((m = re.exec(s)) !== null) {
+      var raw = m[0];
+      var v = parseFloat(raw.replace(/,/g, "").replace(/%/g, ""));
+      if (!isNaN(v)) nums.push({ raw: raw, value: v, index: m.index });
+    }
+    return nums;
+  }
+  Verify.extractNumbers = extractNumbers;
+
+  // Recursively collect every numeric value present in tool results.
+  function collectToolValues(toolResults) {
+    var values = [];
+    function walk(o) {
+      if (o == null) return;
+      if (typeof o === "number") { values.push(o); return; }
+      if (typeof o === "string") { var n = parseFloat(String(o).replace(/,/g, "").replace(/[^0-9.\-]/g, "")); if (!isNaN(n)) values.push(n); return; }
+      if (Array.isArray(o)) { for (var i = 0; i < o.length; i++) walk(o[i]); return; }
+      if (typeof o === "object") { for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) walk(o[k]); }
+    }
+    (toolResults || []).forEach(function (r) { walk(r && r.result); });
+    return values;
+  }
+  Verify.collectToolValues = collectToolValues;
+
+  // True when a tool result indicates an empty query (no rows returned).
+  function hasEmptyResult(toolResults) {
+    return (toolResults || []).some(function (r) {
+      var res = r && r.result;
+      if (!res) return false;
+      if (res.rows && Array.isArray(res.rows) && res.rows.length === 0) return true;
+      if (typeof res.count === "number" && res.count === 0) return true;
+      return false;
+    });
+  }
+  Verify.hasEmptyResult = hasEmptyResult;
+
+  // Check a response's numbers against the tool-result values within a small tolerance.
+  // Returns { verified, unverified, verifiedCount, totalCount, emptyResult, fabricated }.
+  function checkClaims(text, toolResults, tolerance) {
+    tolerance = tolerance != null ? tolerance : CLAIM_TOLERANCE;
+    // Strip citation tokens like [r1] so a resultId's digits aren't treated as a data claim.
+    var body = String(text == null ? "" : text).replace(/\[[^\]]*\]/g, "");
+    var nums = extractNumbers(body);
+    var values = collectToolValues(toolResults);
+    var emptyResult = hasEmptyResult(toolResults);
+    var verified = [], unverified = [];
+    nums.forEach(function (n) {
+      var found = values.some(function (v) { return Math.abs(v - n.value) <= Math.max(0.5, tolerance * Math.abs(n.value)); });
+      if (found) verified.push(n); else unverified.push(n);
+    });
+    return {
+      verified: verified, unverified: unverified,
+      verifiedCount: verified.length, totalCount: nums.length,
+      emptyResult: emptyResult,
+      // A figure with no backing query after an empty result is a flagged fabrication.
+      fabricated: emptyResult && unverified.length > 0
+    };
+  }
+  Verify.checkClaims = checkClaims;
+
+  // Parse inline citations of the form [resultId] and return the ids referenced (in order).
+  function parseCitations(text) {
+    var ids = [], re = /\[([A-Za-z0-9_-]{1,40})\]/g, m, s = String(text == null ? "" : text);
+    while ((m = re.exec(s)) !== null) { if (ids.indexOf(m[1]) === -1) ids.push(m[1]); }
+    return ids;
+  }
+  Verify.parseCitations = parseCitations;
+
+  // Build a provenance footer object for a metric/chart/KPI.
+  function provenance(opts) {
+    opts = opts || {};
+    return {
+      dataset: opts.dataset || null,
+      sourceFile: opts.sourceFile || null,
+      loadedAt: opts.loadedAt || null,
+      filters: opts.filters || null,
+      definition: opts.definition || null,
+      agg: opts.agg || null,
+      rowsUsed: opts.rowsUsed != null ? opts.rowsUsed : null,
+      generatedAt: new Date().toISOString()
+    };
+  }
+  Verify.provenance = provenance;
+
+  // Definition registry: one place where every metric definition lives, surfaced on hover.
+  function definitionRegistry(defs) {
+    var out = {};
+    (defs || []).forEach(function (d) { out[d.id || d.label] = { label: d.label, definition: d.definition || "", agg: d.agg || null, field: d.field || null }; });
+    return out;
+  }
+  Verify.definitionRegistry = definitionRegistry;
+
   var Insight = {};
 
   // Optional coverage section: tells the model which concepts are absent or only partially
@@ -2204,7 +2309,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   AI.filterKey = filterKey;
 
   // ---- Export all modules + legacy aliases on the core namespace ----
-  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools };
+  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools, Verify: Verify };
   // Legacy top-level aliases (backward compat with existing tests)
   api.normalizeHeader = normalizeHeader;
   api.parseDateValue = parseDateValue;
@@ -3104,6 +3209,29 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       var canvas = document.createElement("canvas");
       wrap.appendChild(canvas);
       box.appendChild(wrap);
+      // Phase 7: provenance footer — source dataset, file, load time, filters, rows used.
+      if (rec) {
+        var fb = filteredRowsFor(rec);
+        var src = chartSource(rec, c.spec);
+        var prov = Core.Verify.provenance({
+          dataset: rec.name || rec.sourceFile || rec.id,
+          sourceFile: rec.sourceFile || null,
+          loadedAt: rec.loadedAt || null,
+          filters: (store.get("selectedProducts").length < (store.get("products") || []).length ? "products narrowed" : "all products") + ", " +
+            (store.get("selectedCountries").length < (store.get("countries") || []).length ? "countries narrowed" : "all countries"),
+          definition: "chart spec (type " + c.spec.type + ")",
+          agg: c.spec.y && c.spec.y[0] ? c.spec.y[0].agg : null,
+          rowsUsed: src.rows.length
+        });
+        var foot = document.createElement("div");
+        foot.className = "muted";
+        foot.style.cssText = "font-size:.72rem;margin-top:4px";
+        foot.textContent = "Source: " + prov.dataset + (prov.sourceFile ? " (" + prov.sourceFile + ")" : "") +
+          (prov.loadedAt ? " · loaded " + new Date(prov.loadedAt).toLocaleString() : "") +
+          " · " + prov.filters + " · " + prov.rowsUsed + " rows";
+        foot.title = prov.definition;
+        box.appendChild(foot);
+      }
       el.appendChild(box);
       if (rec && rec.mapping) drawSavedChart(canvas, rec, c.spec);
     });
@@ -3203,6 +3331,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     renderChart(stats.series);
     renderCountries(stats.byCountry);
     renderChartList(); // Phase 5: saved spec-driven charts re-render against the current filters
+    updateMathPanel(); // Phase 7: keep the "show the math" panel current on any filter change
   }
 
   // Phase 2: group/join on the ID, display the label when one exists (entity registry).
@@ -3211,6 +3340,31 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     var d = Core.Entities.entityDisplay(lastLoad.registry, "product", id);
     return d && d !== String(id) ? d + " (" + id + ")" : String(id);
   }
+
+  // Phase 7: "Show the math" — the exact filter set, aggregation, and row count behind the KPIs.
+  function updateMathPanel() {
+    var el = document.getElementById("mathPanel");
+    if (!el || el.style.display === "none") return;
+    var range = dateRange();
+    var filterBits = [];
+    var prods = store.get("selectedProducts"), ctrys = store.get("selectedCountries");
+    filterBits.push(prods.length < (store.get("products") || []).length ? "products: " + prods.length + "/" + (store.get("products") || []).length : "all products");
+    filterBits.push(ctrys.length < (store.get("countries") || []).length ? "countries: " + ctrys.length + "/" + (store.get("countries") || []).length : "all countries");
+    if (range[0] != null || range[1] != null) filterBits.push("date range: " + (range[0] ? new Date(range[0]).toISOString().slice(0, 10) : "…") + " → " + (range[1] ? new Date(range[1]).toISOString().slice(0, 10) : "…"));
+    var agg = store.get("aggMode");
+    var rows = filteredRows();
+    var stats = Core.computeStats(rows, agg);
+    var defs = Core.Verify.definitionRegistry(Core.Metrics.metricPacks("transactions"));
+    el.textContent = "Aggregation: " + agg + " · Rows used: " + rows.length + " · Filters: " + filterBits.join(", ") +
+      " · Total units = sum of the amount/units measure over the selected rows (definition: " + (defs.totalUnits ? defs.totalUnits.definition : "n/a") + ").";
+  }
+  function toggleMath() {
+    var el = document.getElementById("mathPanel");
+    var show = el.style.display === "none";
+    el.style.display = show ? "block" : "none";
+    if (show) updateMathPanel();
+  }
+  document.getElementById("showMathBtn").addEventListener("click", toggleMath);
 
   function renderKpis(s) {
     document.getElementById("kpiTotal").textContent = s.total.toLocaleString();
@@ -3314,6 +3468,14 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
   function aiHistoryEl() { return document.getElementById("aiHistory"); }
 
+  // Phase 7: render inline citations [resultId] as chips. A citation that names a tool result the
+  // user can click is surfaced; unknown ids render as a muted chip.
+  function renderCitationChips(html) {
+    return String(html).replace(/\[([A-Za-z0-9_-]{1,40})\](?!\()/g, function (_, id) {
+      return '<span class="cite-chip" title="Cited result: ' + esc(id) + '">' + esc(id) + '</span>';
+    });
+  }
+
   function addAiEntry(question, answerText, isFallback) {
     var hist = aiHistoryEl();
     var note = document.getElementById("aiEmptyNote");
@@ -3325,7 +3487,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     qDiv.textContent = question ? question : "(Analyze — no question)";
     var aDiv = document.createElement("div");
     aDiv.className = "ai-a md";
-    aDiv.innerHTML = renderMd(answerText); // content comes from the user's own API; rendered as markdown incl. tables
+    aDiv.innerHTML = renderCitationChips(renderMd(answerText)); // content comes from the user's own API; rendered as markdown incl. tables
     aDiv.querySelectorAll("table").forEach(function (t) { // wrap tables so wide ones scroll horizontally
       var w = document.createElement("div");
       w.className = "table-wrap";
@@ -3435,9 +3597,21 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       });
       var answer = loopRes.content;
       if (loopRes.hitCap) answer += "\n\n> _(Reached the tool-turn limit; ask a narrower question.)_";
+      // Phase 7: verify every number in the answer against this turn's tool results (source data
+      // is the authority). Unverified numbers are flagged, never silently dropped.
+      var claims = Core.Verify.checkClaims(answer, loopRes.results);
+      var verdict = "";
+      if (claims.totalCount > 0) {
+        verdict = "\n\n---\n**Verification:** " + claims.verifiedCount + " of " + claims.totalCount + " numbers backed by a query" +
+          (claims.unverified.length ? " · **" + claims.unverified.length + " unverified**" : "") +
+          (claims.fabricated ? " · ⚠ **flagged fabrication** (number after an empty result)" : "") + ".";
+        if (claims.unverified.length) {
+          verdict += "\nUnverified: " + claims.unverified.map(function (u) { return "`" + u.raw + "`"; }).join(", ");
+        }
+      }
       aiCtx.messages.push({ role: "assistant", content: answer });
       pending.remove();
-      addAiEntry(question, answer + (toolLog.length ? "\n\n**Tools used:**\n" + toolLog.join("\n") : ""), false);
+      addAiEntry(question, answer + verdict + (toolLog.length ? "\n\n**Tools used:**\n" + toolLog.join("\n") : ""), false);
     } catch (e) {
       pending.remove();
       addAiEntry(question, Core.buildStatisticalFallback(stats) + "\n\n[AI request failed after " + Math.floor((Date.now() - t0) / 1000) + "s: " + e.message + "]", true);
