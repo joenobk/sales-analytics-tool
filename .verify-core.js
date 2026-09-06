@@ -256,6 +256,102 @@ for (const c of cited) if (!figIds.has(c.slice(1, -1))) { console.error("FAIL 10
 console.log("phase 10.4 actions tied to figures: ok");
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Phase 11: AI-guided multi-file discovery & onboarding
+// ---------------------------------------------------------------------------
+const OB = Core.Onboarding;
+// 11.1 Concept vocabulary binds the corpus entities (Contact, Lead, Sale, Sale-Line).
+const cContact = OB.conceptFromHeaderWord("ContactID");
+if (cContact !== "contact") { console.error("FAIL 11.1: ContactID must bind to contact", cContact); process.exit(1); }
+const cLead = OB.conceptFromHeaderWord("LeadID");
+if (cLead !== "lead") { console.error("FAIL 11.1: LeadID must bind to lead", cLead); process.exit(1); }
+const cSale = OB.conceptFromHeaderWord("SalesID");
+if (cSale !== "sale") { console.error("FAIL 11.1: SalesID must bind to sale", cSale); process.exit(1); }
+const cLine = OB.conceptFromHeaderWord("LineID");
+if (cLine !== "sale_line") { console.error("FAIL 11.1: LineID must bind to sale_line", cLine); process.exit(1); }
+console.log("phase 11.1 corpus concept vocabulary: ok");
+
+// 11.2 Pre-profile: compact, deterministic, NEVER full rows (headers + ≤5 samples only).
+const profRows = [["C1", "Alice", "2024-01-05", "100"], ["C2", "Bob", "2024-02-10", "200"]];
+const profMap = [
+  { name: "ContactID", type: "identifier", role: "identifier", concept: "contact", idx: 0 }, 
+  { name: "FullName", type: "text", role: "dimension", idx: 1 },
+  { name: "CreatedDate", type: "date", role: "time", concept: "time", idx: 2, format: "iso" },
+  { name: "Amount", type: "number", role: "measure", concept: "amount", idx: 3 }
+];
+const prof = OB.preProfile("Contacts.csv", ["ContactID", "FullName", "CreatedDate", "Amount"], profRows, profMap);
+if (prof.name !== "Contacts.csv" || prof.rowCount !== 2 || prof.dateRange[0] !== "2024-01-05" || prof.dateRange[1] !== "2024-02-10") { console.error("FAIL 11.2: pre-profile basics", JSON.stringify(prof)); process.exit(1); }
+const profJSON = JSON.stringify(prof);
+if (profJSON.indexOf('"Alice"') === -1) { console.error("FAIL 11.2: profile must carry ≤5 sample values"); process.exit(1); }
+if (profJSON.indexOf('"full-row"') !== -1) { console.error("FAIL 11.2: profile must not carry full rows"); process.exit(1); }
+if (prof.columns[0].samples.length > 5 || prof.columns[0].distinct !== 2 || prof.columns[1].nulls !== 0) { console.error("FAIL 11.2: profile column stats", JSON.stringify(prof.columns)); process.exit(1); }
+console.log("phase 11.2 deterministic pre-profile (headers + ≤5 samples, no rows): ok");
+
+// 11.3 Multi-hop join graph: corpus chain resolves into connected paths.
+const dsContacts = { id: "contacts", name: "Contacts", fields: ["ContactID", "FullName"], mapping: [{ name: "ContactID", type: "identifier", role: "identifier", concept: "contact", idx: 0 }, { name: "FullName", type: "text", role: "dimension", idx: 1 }], rowsArr: [["C1", "Alice"], ["C2", "Bob"]] };
+const dsLeads = { id: "leads", name: "Leads", fields: ["LeadID", "ContactID", "LeadSource"], mapping: [{ name: "LeadID", type: "identifier", role: "identifier", concept: "lead", idx: 0 }, { name: "ContactID", type: "identifier", role: "identifier", concept: "contact", idx: 1 }, { name: "LeadSource", type: "categorical", role: "dimension", idx: 2 }], rowsArr: [["L1", "C1", "web"], ["L2", "C2", "referral"]] };
+const dsSales = { id: "sales", name: "Sales", fields: ["SalesID", "ContactID", "Amount"], mapping: [{ name: "SalesID", type: "identifier", role: "identifier", concept: "sale", idx: 0 }, { name: "ContactID", type: "identifier", role: "identifier", concept: "contact", idx: 1 }, { name: "Amount", type: "number", role: "measure", concept: "amount", idx: 2 }], rowsArr: [["S1", "C1", "100"], ["S2", "C2", "200"]] };
+const graph = OB.resolveJoinGraph([dsContacts, dsLeads, dsSales], [
+  { from: "leads", fromCol: "ContactID", to: "contacts", toCol: "ContactID" },
+  { from: "sales", fromCol: "ContactID", to: "contacts", toCol: "ContactID" }
+]);
+if (!graph.paths.length) { console.error("FAIL 11.3: no connected path", JSON.stringify(graph)); process.exit(1); }
+const chain = graph.paths.find(p => p.nodes.indexOf("contacts") !== -1 && p.nodes.indexOf("sales") !== -1);
+if (!chain) { console.error("FAIL 11.3: must include the contacts-leads-sales chain"); process.exit(1); }
+if (graph.errors && graph.errors.length) { console.error("FAIL 11.3: unexpected errors", graph.errors); process.exit(1); }
+// Concept-absent join is REJECTED with a specific error.
+const badGraph = OB.resolveJoinGraph([dsContacts, dsLeads], [{ from: "contacts", fromCol: "FullName", to: "leads", toCol: "LeadID" }]);
+if (!badGraph.errors.length) { console.error("FAIL 11.3: concept-absent join must be rejected", JSON.stringify(badGraph)); process.exit(1); }
+console.log("phase 11.3 multi-hop join graph + absent-concept rejection: ok");
+
+// 11.4 Multi-hop enrichment: revenue per contact via Sale->Contact (single hop here; harness adds 2-hop).
+const enrichedPerContact = OB.multiHopEnrich(graph.paths.find(p => p.nodes.indexOf("contacts") !== -1 && p.nodes.indexOf("sales") !== -1).edges, [dsContacts, dsLeads, dsSales], { measureField: "Amount", groupConcept: "contact" });
+// Sale rows join to contact: S1->C1 (100), S2->C2 (200) => C1:100, C2:200 (group by ContactID on Contacts).
+const c1 = enrichedPerContact.find(e => e.key === "C1");
+if (!c1 || c1.value !== 100) { console.error("FAIL 11.4: revenue per contact must be correct", JSON.stringify(enrichedPerContact)); process.exit(1); }
+console.log("phase 11.4 multi-hop enrichment (revenue per contact): ok");
+
+// 11.4b True two-hop: revenue per contact via SaleLine→Sale→Contact.
+const dsLines = { id: "lines", name: "SalesLines", fields: ["LineID", "SalesID", "LinePrice"], mapping: [
+  { name: "LineID", type: "identifier", role: "identifier", concept: "sale_line", idx: 0 },
+  { name: "SalesID", type: "identifier", role: "identifier", concept: "sale", idx: 1 },
+  { name: "LinePrice", type: "number", role: "measure", concept: "amount", idx: 2 }
+], rowsArr: [["LN1", "S1", "40"], ["LN2", "S1", "60"], ["LN3", "S2", "75"], ["LN4", "S9", "999"]] }; // S9 has no sale -> must not contribute
+const graph2 = OB.resolveJoinGraph([dsContacts, dsSales, dsLines], [
+  { from: "lines", fromCol: "SalesID", to: "sales", toCol: "SalesID" },
+  { from: "sales", fromCol: "ContactID", to: "contacts", toCol: "ContactID" }
+]);
+const chain2 = graph2.paths.find(p => p.nodes.indexOf("lines") !== -1 && p.nodes.indexOf("contacts") !== -1);
+if (!chain2) { console.error("FAIL 11.4b: 2-hop chain not found", JSON.stringify(graph2.paths)); process.exit(1); }
+const revPerContact2 = OB.multiHopEnrich(chain2.edges, [dsContacts, dsSales, dsLines], { measureField: "LinePrice", groupConcept: "contact" });
+// LN1+LN2 -> S1 -> C1 = 100; LN3 -> S2 -> C2 = 75; LN4 -> S9 (no sale) dropped.
+const c1b = revPerContact2.find(e => e.key === "C1");
+const c2b = revPerContact2.find(e => e.key === "C2");
+if (!c1b || c1b.value !== 100 || !c2b || c2b.value !== 75) { console.error("FAIL 11.4b: 2-hop revenue per contact", JSON.stringify(revPerContact2)); process.exit(1); }
+if (revPerContact2.some(e => e.value === 999)) { console.error("FAIL 11.4b: orphan line must not contribute"); process.exit(1); }
+console.log("phase 11.4b true two-hop enrichment (SaleLine→Sale→Contact): ok");
+
+// 11.5 Blueprint validation: bad role + absent concept rejected; bounded corpus summary.
+const bpGood = OB.validateBlueprint({ datasets: [{ name: "Contacts", roleChanges: [{ column: "FullName", role: "text", concept: "contact" }] }], joins: [{ from: "Contacts", to: "Leads", on: "ContactID" }] }, []);
+if (!bpGood.ok) { console.error("FAIL 11.5: valid blueprint rejected", bpGood.errors); process.exit(1); }
+const bpBadRole = OB.validateBlueprint({ datasets: [{ name: "Contacts", roleChanges: [{ column: "FullName", role: "notarole" }] }] }, []);
+if (bpBadRole.ok || !/role set/.test(bpBadRole.errors.join(" "))) { console.error("FAIL 11.5: bad role must be rejected", bpBadRole.errors); process.exit(1); }
+const bpBadConcept = OB.validateBlueprint({ datasets: [{ name: "Contacts", roleChanges: [{ column: "X", concept: "ufo" }] }] }, []);
+if (bpBadConcept.ok || !/registry/.test(bpBadConcept.errors.join(" "))) { console.error("FAIL 11.5: absent concept must be rejected", bpBadConcept.errors); process.exit(1); }
+const summary = OB.corpusSummary([{ name: "Contacts.csv", rowCount: 2, dateRange: ["2024-01-05", "2024-02-10"], columns: [{ name: "ContactID", type: "identifier", role: "identifier", concept: "contact", distinct: 2, nulls: 0, samples: ["C1", "C2"] }] }]);
+if (summary.indexOf("Contacts.csv") === -1 || summary.indexOf("ContactID") === -1) { console.error("FAIL 11.5: corpus summary", summary); process.exit(1); }
+console.log("phase 11.5 blueprint validation + bounded corpus summary: ok");
+
+// 11.6 Persist review keyed by sorted file-shape hash.
+const shapeKey = OB.shapesKey([{ name: "Contacts.csv", fields: ["ContactID", "FullName"] }, { name: "Leads.csv", fields: ["LeadID", "ContactID"] }]);
+const shapeKey2 = OB.shapesKey([{ name: "Leads.csv", fields: ["LeadID", "ContactID"] }, { name: "Contacts.csv", fields: ["ContactID", "FullName"] }]);
+if (shapeKey !== shapeKey2) { console.error("FAIL 11.6: shapesKey must be order-independent", shapeKey, shapeKey2); process.exit(1); }
+OB.saveReview({ key: shapeKey, decisions: {} }, fakeLocalStorage);
+const loaded = OB.loadReview(fakeLocalStorage);
+if (!loaded || loaded.key !== shapeKey) { console.error("FAIL 11.6: review persist round-trip", JSON.stringify(loaded)); process.exit(1); }
+console.log("phase 11.6 review persistence by shape hash: ok");
+// ---------------------------------------------------------------------------
+
 // 1. Parse + validate
 const parsed = Core.parseCsvData(header, dataRows);
 console.log("rows:", parsed.rows.length, "errors:", JSON.stringify(parsed.errors));

@@ -225,11 +225,13 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.15 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.16 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
   </label>
+    <button id="folderBtn" type="button" title="Review a whole folder as one corpus (Phase 11)">Review folder…</button>
+    <input type="file" id="folderInput" webkitdirectory multiple hidden>
   <button id="resetBtn" title="Reset all filters">Reset filters</button>
     <button id="themeBtn" type="button" title="Toggle light / dark theme">☾</button>
       <button id="sidebarToggle" type="button" title="Collapse / expand the filter sidebar (F)">Hide filters</button>
@@ -251,6 +253,22 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     <span id="mapAiStatus" style="font-size:.8rem;color:#6b7280"></span>
   </div>
 </div>
+
+  <!-- Phase 11: review board (folder onboarding, before anything loads) -->
+  <div id="reviewBoard" class="card" style="display:none; margin: 24px auto; max-width: 1100px;">
+    <h3 style="margin-top:0">Review board — folder onboarding</h3>
+    <p id="reviewMsg" style="font-size:.85rem;color:#6b7280"></p>
+    <div id="reviewFiles" style="margin-bottom:12px"></div>
+    <div id="reviewJoins" style="margin-bottom:12px"></div>
+    <div id="reviewPlan" style="margin-bottom:12px"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button type="button" id="reviewAcceptAllBtn" style="background:#f97316;color:#fff;font-weight:600">Accept all</button>
+      <button type="button" id="reviewAcceptInferredBtn" title="Drop AI changes, keep local inference">Accept inferred</button>
+      <button type="button" id="reviewRejectBtn">Reject</button>
+      <button type="button" id="reviewCloseBtn">Close</button>
+      <span id="reviewStatus" style="font-size:.8rem;color:#6b7280"></span>
+    </div>
+  </div>
 
 <div class="layout">
   <aside class="sidebar">
@@ -804,20 +822,25 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   // ---- Entities module (Phase 2: concept layer, ID/label pairing, registry, fuzzy matching) ----
   var Entities = {};
 
-  var CONCEPTS = ["product", "account", "rep", "territory", "geography", "campaign", "opportunity", "activity", "time", "amount"];
+  var CONCEPTS = ["product", "account", "rep", "territory", "geography", "campaign", "opportunity", "activity", "time", "amount", "contact", "lead", "sale", "sale_line"];
   // Starter synonym dictionary — header aliases per concept. Learns from user overrides (see recordOverride).
   var SYNONYMS = {
-    product: ["sku", "item", "article", "partnumber", "material", "productid", "itemid"],
+      product: ["sku", "item", "article", "partnumber", "material", "productid", "itemid", "itemno", "itemname"],
     account: ["acct", "customer", "client", "company", "accountname", "custid", "accountid"],
-    rep: ["owner", "ae", "salesperson", "salesrep", "assignedto", "representative"],
+      rep: ["owner", "ae", "salesperson", "salesrep", "assignedto", "representative"],
     territory: ["terr", "region", "area", "zone", "district"],
     geography: ["country", "state", "province", "city", "market", "postal", "zip", "geo", "address"],
     campaign: ["promo", "promotion", "initiative"],
     opportunity: ["deal", "oppid", "opportunityid", "quote"],
     activity: ["call", "email", "meeting", "touchpoint", "task"],
-    time: ["date", "close_date", "created", "period", "month", "day"],
-    amount: ["revenue", "amount", "value", "qty", "quantity", "units", "sold", "spend", "price", "cost", "margin", "total"]
-  };
+      time: ["date", "close_date", "created", "period", "month", "day", "salesdate", "duedate", "createddate"],
+      amount: ["revenue", "amount", "value", "qty", "quantity", "units", "sold", "spend", "price", "cost", "margin", "total", "lineprice", "estimatedvalue", "unitprice"],
+      // Phase 11: the sample corpus's CRM/ERP entities are first-class concepts.
+      contact: ["contact", "contactid", "fullname", "customerid", "person", "email", "phone", "name"],
+      lead: ["lead", "leadid", "leadsource", "leadstatus"],
+      sale: ["sale", "salesid", "paymentstatus"],
+      sale_line: ["sale_line", "sale_lineid", "lineid", "sale line", "sale_lineid", "salesline"]
+    };
   Entities.CONCEPTS = CONCEPTS;
   Entities.SYNONYMS = SYNONYMS;
 
@@ -1298,18 +1321,20 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       total += r.units;
       byProduct[r.articleId] = (byProduct[r.articleId] || 0) + r.units;
       byCountry[r.countryCode] = (byCountry[r.countryCode] || 0) + r.units;
-      var m = r.date.getMonth();
-      if (!monthOfYear[m]) monthOfYear[m] = { sum: 0, days: new Set() };
-      monthOfYear[m].sum += r.units;
-      monthOfYear[m].days.add(r.date.getTime());
-      dates.push(r.date);
-    });
-    var series = aggregate(rows, aggMode);
-    var slope = linearRegressionSlope(series.map(function (b) { return b.units; }));
-    var meanPerBucket = total / Math.max(1, series.length);
-    var trendPct = meanPerBucket ? slope / meanPerBucket : 0;
+          if (r.date) { // null dates (lenient/generic datasets) can't feed seasonality
+            var m = r.date.getMonth();
+            if (!monthOfYear[m]) monthOfYear[m] = { sum: 0, days: new Set() };
+            monthOfYear[m].sum += r.units;
+            monthOfYear[m].days.add(r.date.getTime());
+            dates.push(r.date);
+          }
+        });
+        var series = aggregate(rows, aggMode);
+        var slope = linearRegressionSlope(series.map(function (b) { return b.units; }));
+        var meanPerBucket = total / Math.max(1, series.length);
+        var trendPct = meanPerBucket ? slope / meanPerBucket : 0;
 
-    var allDays = new Set(dates.map(function (d) { return d.getTime(); }));
+        var allDays = new Set(dates.map(function (d) { return d.getTime(); }));
     var overallDailyAvg = total / Math.max(1, allDays.size);
     var season = Object.keys(monthOfYear).map(function (m) {
       var info = monthOfYear[m];
@@ -2783,6 +2808,274 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         return mI >= 0 ? toNum(r[mI]) : null;
       }
 
+        // ---- Phase 11: AI-guided multi-file discovery & onboarding ----
+        // Takes a folder/batch of files, builds a deterministic local pre-profile per file (headers +
+        // types + roles + concepts + samples — NEVER full rows), proposes joins incl. multi-hop paths,
+        // and renders a review board the human confirms before anything loads. AI is additive, never
+        // load-bearing: the board works fully offline from the local pre-profile + join candidates.
+        var Onboarding = {};
+        var ONBOARD_LS_KEY = "salesOnboardReview";
+
+        // Resolve a concept from a header word (case/normalized) — includes the Phase 11 entities.
+        function conceptFromHeaderWord(word) {
+          var nh = normalizeHeader(word);
+          for (var i = 0; i < CONCEPTS.length; i++) {
+            var syns = SYNONYMS[CONCEPTS[i]];
+            for (var j = 0; j < syns.length; j++) if (nh === syns[j] || nh.indexOf(syns[j]) >= 0) return CONCEPTS[i];
+          }
+          return null;
+        }
+        Onboarding.conceptFromHeaderWord = conceptFromHeaderWord;
+
+        // Compact per-file profile (the ONLY thing that may leave the browser).
+        // returns { name, rowCount, dateRange:[fromISO,toISO]|null, columns:[{name,type,role,concept,distinct,nulls,samples[]}] }
+        function preProfile(name, fields, rowsArr, mapping) {
+          var bound = Entities.bindConcepts(mapping || []);
+          var cols = (fields || []).map(function (h, i) {
+            var col = bound[i] || { name: h, type: "unknown", role: "dimension", concept: null };
+            var vals = {};
+            var nulls = 0;
+            (rowsArr || []).slice(0, 4000).forEach(function (r) {
+              var v = r[i];
+              if (v == null || String(v).trim() === "") { nulls++; return; }
+              vals[String(v).trim()] = true;
+            });
+            var distinct = Object.keys(vals).length;
+            var samples = Object.keys(vals).slice(0, 5);
+            return { name: h, type: col.type || "unknown", role: col.role || "dimension", concept: col.concept || null, distinct: distinct, nulls: nulls, samples: samples };
+          });
+          var dateRange = null;
+          var timeIdx = null;
+          for (var i = 0; i < (fields || []).length; i++) if (bound[i] && bound[i].concept === "time") { timeIdx = i; break; }
+          if (timeIdx != null) {
+            var minT = null, maxT = null;
+            (rowsArr || []).forEach(function (r) {
+              var d = Metrics.parseTime(r[timeIdx], bound[timeIdx] && bound[timeIdx].format);
+              if (!d) return;
+              var t = d.getTime();
+              if (minT == null || t < minT) minT = t;
+              if (maxT == null || t > maxT) maxT = t;
+            });
+            if (minT != null) dateRange = [new Date(minT).toISOString().slice(0, 10), new Date(maxT).toISOString().slice(0, 10)];
+          }
+          return { name: name, rowCount: (rowsArr || []).length, dateRange: dateRange, columns: cols };
+        }
+        Onboarding.preProfile = preProfile;
+
+        // Multi-hop join graph. `datasets` is [{id,name,rowsArr,mapping,fields}]. `edges` is a list of
+        // {from, fromCol, to, toCol} (dataset ids/indices + column names) OR pairs resolved automatically
+        // from shared concepts. Returns {paths:[{nodes:[ids], edges:[...]}], resolved:[...]}, with the
+        // connected components (paths) built from the edges. Rejects an edge referencing a concept not
+        // present on BOTH datasets with a specific error.
+        function resolveJoinGraph(datasets, edges) {
+          datasets = datasets || [];
+          var byId = {};
+          datasets.forEach(function (d) { byId[d.id] = d; });
+          var resolved = [];
+          var errors = [];
+          edges = edges || [];
+          // Auto-detect edges from shared concept columns when `edges` is empty.
+          if (!edges.length) {
+            for (var a = 0; a < datasets.length; a++) for (var b = a + 1; b < datasets.length; b++) {
+              var da = datasets[a], db = datasets[b];
+              var ma = da.mapping || [], mb = db.mapping || [];
+              for (var i = 0; i < ma.length; i++) {
+                for (var j = 0; j < mb.length; j++) {
+                  if (ma[i].concept && ma[i].concept === mb[j].concept && !(ma[i].concept === "time" || ma[i].concept === "amount" || ma[i].concept === "geography")) {
+                    resolved.push({ from: da.id, fromCol: ma[i].name, to: db.id, toCol: mb[j].name, concept: ma[i].concept, rationale: "shared " + ma[i].concept + " concept" });
+                  }
+                }
+              }
+            }
+          } else {
+            edges.forEach(function (e) {
+              var da = byId[e.from], db = byId[e.to];
+              if (!da || !db) { errors.push("Unknown dataset in edge " + e.from + "→" + e.to); return; }
+              var ma = da.mapping || [], mb = db.mapping || [];
+              var ca = null, cb = null;
+              for (var i = 0; i < ma.length; i++) if (ma[i].name === e.fromCol) ca = ma[i];
+              for (var j = 0; j < mb.length; j++) if (mb[j].name === e.toCol) cb = mb[j];
+              if (!ca) { errors.push("'" + e.fromCol + "' not found on " + da.name + " — cannot join"); return; }
+              if (!cb) { errors.push("'" + e.toCol + "' not found on " + db.name + " — cannot join"); return; }
+              if (!ca.concept || !cb.concept) { errors.push("Join on columns without a bound concept: " + e.fromCol + "/" + e.toCol); return; }
+              if (ca.concept !== cb.concept) { errors.push("Concept mismatch: " + e.from + "." + e.fromCol + " (" + ca.concept + ") vs " + e.to + "." + e.toCol + " (" + cb.concept + ")"); return; }
+              resolved.push({ from: da.id, fromCol: e.fromCol, to: db.id, toCol: e.toCol, concept: ca.concept, rationale: e.rationale || "proposed" });
+            });
+          }
+          // Build connected paths (undirected) from resolved edges.
+          var adj = {};
+          resolved.forEach(function (e) {
+            (adj[e.from] = adj[e.from] || []).push({ other: e.to, edge: e });
+            (adj[e.to] = adj[e.to] || []).push({ other: e.from, edge: e });
+          });
+          var seen = {};
+          var paths = [];
+          Object.keys(adj).forEach(function (start) {
+            if (seen[start]) return;
+            var nodes = [], edgesIn = [];
+            function walk(id) {
+              if (seen[id]) return;
+              seen[id] = true;
+              nodes.push(id);
+              (adj[id] || []).forEach(function (n) {
+                if (!seen[n.other]) { edgesIn.push(n.edge); walk(n.other); }
+              });
+            }
+            walk(start);
+            if (nodes.length > 1) paths.push({ nodes: nodes, edges: edgesIn });
+          });
+          return { paths: paths, resolved: resolved, errors: errors };
+        }
+        Onboarding.resolveJoinGraph = resolveJoinGraph;
+
+        // Multi-hop enrichment across a connected path (e.g. SaleLine→Sale→Contact). `pathEdges`
+                // is the ordered edge list of one path; `opts.measureDatasetId`/`opts.measureField` are the
+                // first dataset + numeric field to sum; `opts.groupConcept` is the concept on the LAST
+                // dataset to group by. Returns [{key,value}] sorted by value desc.
+                function multiHopEnrich(pathEdges, datasets, opts) {
+                  opts = opts || {};
+                  var byId = {};
+                  (datasets || []).forEach(function (d) { byId[d.id] = d; });
+                  if (!pathEdges || !pathEdges.length) return [];
+                  function colIdx(d, col) {
+                    for (var i = 0; i < (d.mapping || []).length; i++) if (d.mapping[i].name === col) return d.mapping[i].idx;
+                    return -1;
+                  }
+                  function indexOf(d, col) {
+                    var idx = colIdx(d, col);
+                    var map = {};
+                    (d.rowsArr || []).forEach(function (r, ri) {
+                      var v = idx >= 0 ? String(r[idx] == null ? "" : r[idx]).trim() : "";
+                      if (v) (map[v] = map[v] || []).push(ri);
+                    });
+                    return map;
+                  }
+                  var first = pathEdges[0];
+                  var firstDs = byId[first.from];
+                                    // Choose the path dataset that actually carries the measure field (the START of
+                                    // the enrichment), regardless of edge order — e.g. SaleLine carries LinePrice, not
+                                    // Contact. Fall back to opts.measureDatasetId.
+                                    if (opts.measureDatasetId && byId[opts.measureDatasetId]) firstDs = byId[opts.measureDatasetId];
+                                    else if (opts.measureField) {
+                                      // Prefer the dataset with the exact measure column; fall back to any amount concept.
+                                      var byName = null, byConcept = null;
+                                      for (var di = 0; di < (datasets || []).length; di++) {
+                                        var dd = datasets[di];
+                                        if (!byName && (dd.mapping || []).some(function (c) { return c.name === opts.measureField; })) byName = dd;
+                                        if (!byConcept && (dd.mapping || []).some(function (c) { return c.concept === "amount"; })) byConcept = dd;
+                                      }
+                                      firstDs = byName || byConcept || firstDs;
+                                    }
+                  if (!firstDs) return [];
+                                    // Orient the edges as an ordered chain from `firstDs` to the group target via BFS:
+                                    // each oriented edge has from=current, to=next.
+                                    var adj = {};
+                                    pathEdges.forEach(function (e) {
+                                      (adj[e.from] = adj[e.from] || []).push({ other: e.to, edge: e, rev: false });
+                                      (adj[e.to] = adj[e.to] || []).push({ other: e.from, edge: e, rev: true });
+                                    });
+                                    var order = [];
+                                    var seenDs = {};
+                                    var queue = [firstDs.id];
+                                    seenDs[firstDs.id] = true;
+                                    while (queue.length) {
+                                      var cur = queue.shift();
+                                      (adj[cur] || []).forEach(function (n) {
+                                        if (seenDs[n.other]) return;
+                                        seenDs[n.other] = true;
+                                        order.push({ from: n.rev ? n.edge.to : n.edge.from, fromCol: n.rev ? n.edge.toCol : n.edge.fromCol, to: n.rev ? n.edge.from : n.edge.to, toCol: n.rev ? n.edge.fromCol : n.edge.toCol, concept: n.edge.concept });
+                                        queue.push(n.other);
+                                      });
+                                    }
+                                    // Group target is the dataset with the groupConcept column, on the reached path.
+                                    var groupDs = null;
+                                    for (var gg = 0; gg < (datasets || []).length; gg++) {
+                                      var hasG = (datasets[gg].mapping || []).some(function (c) { return c.concept === opts.groupConcept; });
+                                      if (hasG && (datasets[gg].id === firstDs.id || seenDs[datasets[gg].id])) { groupDs = datasets[gg]; break; }
+                                    }
+                                    var startIdx = colIdx(firstDs, opts.measureField || first.fromCol);
+                                    var currentRows = (firstDs.rowsArr || []).map(function (r, i) {
+                                      return { ri: i, v: startIdx >= 0 ? toNum(r[startIdx]) : 1 };
+                                    });
+                                    order.forEach(function (e) {
+                                      var fromDs = byId[e.from], toDs = byId[e.to];
+                                      var toIndex = indexOf(toDs, e.toCol);
+                                      var fJoinIdx = colIdx(fromDs, e.fromCol);
+                                      var nextRows = [];
+                                      currentRows.forEach(function (cr) {
+                                        var joinVal = fJoinIdx >= 0 ? String(fromDs.rowsArr[cr.ri][fJoinIdx] == null ? "" : fromDs.rowsArr[cr.ri][fJoinIdx]).trim() : "";
+                                        var targets = joinVal && toIndex[joinVal] ? toIndex[joinVal] : [];
+                                        targets.forEach(function (tri) {
+                                          nextRows.push({ ri: tri, v: cr.v });
+                                        });
+                                      });
+                                      currentRows = nextRows;
+                                    });
+                                    var groupIdx = -1;
+                                    for (var g2 = 0; g2 < ((groupDs && groupDs.mapping) || []).length; g2++) if (groupDs.mapping[g2].concept === opts.groupConcept) { groupIdx = groupDs.mapping[g2].idx; break; }
+                                    var group = {};
+                                    currentRows.forEach(function (cr) {
+                                      if (groupIdx < 0 || !groupDs) return;
+                                      var k = String(groupDs.rowsArr[cr.ri][groupIdx] == null ? "" : groupDs.rowsArr[cr.ri][groupIdx]).trim();
+                                      if (!k) return;
+                                      group[k] = (group[k] || 0) + (cr.v || 0);
+                  });
+                  return Object.keys(group).map(function (k) { return { key: k, value: group[k] }; }).sort(function (a, b) { return b.value - a.value; });
+                }
+                Onboarding.multiHopEnrich = multiHopEnrich;
+
+                // Review persisted by a hash of the sorted file shapes (invalidate only what changed).
+                function shapesKey(files) {
+                  var sigs = (files || []).map(function (f) { return f.name + ":" + (f.fields || []).join(","); }).sort().join("|");
+                  return textHash(sigs);
+                }
+                Onboarding.shapesKey = shapesKey;
+                function loadReview(storage) {
+                  storage = storage || (typeof localStorage !== "undefined" ? localStorage : null);
+                  if (!storage) return null;
+                  try { return JSON.parse(storage.getItem(ONBOARD_LS_KEY)) || null; } catch (e) { return null; }
+                }
+                Onboarding.loadReview = loadReview;
+                function saveReview(review, storage) {
+                  storage = storage || (typeof localStorage !== "undefined" ? localStorage : null);
+                  if (!storage) return;
+                  try { storage.setItem(ONBOARD_LS_KEY, JSON.stringify(review)); } catch (e) {}
+                }
+                Onboarding.saveReview = saveReview;
+
+                // Bounded corpus summary (headers/types/roles/concepts/samples — NEVER full rows).
+                function corpusSummary(profiles) {
+                  var parts = [];
+                  (profiles || []).forEach(function (p) {
+                    var cols = (p.columns || []).map(function (c) {
+                      return c.name + ":" + c.type + "/" + c.role + (c.concept ? "/" + c.concept : "") + " [" + c.distinct + " distinct, " + c.nulls + " null] " + (c.samples || []).slice(0, 3).join("|");
+                    }).join("; ");
+                    parts.push("FILE " + p.name + " (" + p.rowCount + " rows" + (p.dateRange ? ", " + p.dateRange.join("..") : "") + "): " + cols);
+                  });
+                  return parts.join("\n");
+                }
+                Onboarding.corpusSummary = corpusSummary;
+
+                // Strict-blueprint validation: roles in the role set, concepts in the registry.
+                function validateBlueprint(bp, profiles) {
+                  var errors = [];
+                  if (!bp || typeof bp !== "object") return { ok: false, errors: ["Blueprint must be an object."] };
+                  var ROLE_SET = {};
+                  (ROLE_OPTIONS || []).forEach(function (r) { ROLE_SET[r] = true; });
+                  (bp.datasets || []).forEach(function (d) {
+                    if (!d || !d.name) { errors.push("A blueprint dataset is missing its name."); return; }
+                    (d.roleChanges || []).forEach(function (c) {
+                      if (c.role && !ROLE_SET[c.role]) errors.push("Dataset " + d.name + ": role '" + c.role + "' is not in the role set.");
+                      if (c.concept && CONCEPTS.indexOf(c.concept) === -1) errors.push("Dataset " + d.name + ": concept '" + c.concept + "' is not in the registry.");
+                    });
+                  });
+                  (bp.joins || []).forEach(function (j) {
+                    if (!j.from || !j.to || !j.on) errors.push("A join edge is missing from/to/on.");
+                  });
+                  return { ok: !errors.length, errors: errors };
+                }
+                Onboarding.validateBlueprint = validateBlueprint;
+
   // Deterministic opening profile for a dataset (rendered immediately, never blocks on the model).
   // `rows` are the normalized object rows from the app's filtered view ({date, articleId, countryCode, units}).
   function openProfile(rows, mapping, aggMode) {
@@ -2931,7 +3224,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   AI.filterKey = filterKey;
 
   // ---- Export all modules + legacy aliases on the core namespace ----
-  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools, Verify: Verify, TextAnalytics: TextAnalytics, Severity: Severity, ReportBuilder: ReportBuilder };
+  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools, Verify: Verify, TextAnalytics: TextAnalytics, Severity: Severity, ReportBuilder: ReportBuilder, Onboarding: Onboarding };
   // Legacy top-level aliases (backward compat with existing tests)
   api.normalizeHeader = normalizeHeader;
   api.parseDateValue = parseDateValue;
@@ -3186,6 +3479,269 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     }
 
   var panelCols = []; // live column objects for the open panel (edits land here)
+
+  // ---- Phase 11: folder intake + review board ----
+  // Reads every file in a chosen folder (webkitdirectory), builds local pre-profiles + join
+  // graph, and opens a review board the human confirms BEFORE anything loads. AI is additive:
+  // with no API configured the board still shows the deterministic local profile + candidates.
+  var reviewState = null; // { key, files:[{name,sourceFile,fields,rowsArr,mapping,profile}], graph, decisions:{...} }
+  var reviewFilesToApply = []; // packs selected via Accept inferred/All
+
+  function folderFilePacks(files) {
+    // Parse each CSV/XLSX into a candidate pack (same shape as handleFile's packs).
+    return new Promise(function (resolve) {
+      var packs = [];
+      var pending = files.length || 0;
+      if (!pending) return resolve(packs);
+      files.forEach(function (file) {
+        if (/\.xlsx?$/i.test(file.name) || /sheet|spreadsheet/i.test(file.type || "")) {
+          file.arrayBuffer().then(function (buf) {
+            try {
+              var wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+              wb.SheetNames.forEach(function (sn) {
+                var ws = wb.Sheets[sn];
+                if (!ws || !ws["!ref"]) return;
+                var aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: false, raw: false });
+                if (!aoa || aoa.length < 2) return;
+                var fields = aoa[0].map(function (h) { return String(h == null ? "" : h).trim(); });
+                var rowsArr = aoa.slice(1).map(function (r) { return fields.map(function (_, j) { return r[j] != null ? r[j] : null; }); });
+                packs.push({ name: (file.name.replace(/\.xlsx?$/i, "") || "sheet") + " — " + sn, sourceFile: file.name, fields: fields, rowsArr: rowsArr });
+              });
+            } catch (e) {}
+            if (--pending === 0) resolve(packs);
+          }).catch(function () { if (--pending === 0) resolve(packs); });
+        } else {
+          Papa.parse(file, {
+            header: true, skipEmptyLines: true, dynamicTyping: false,
+            complete: function (res) {
+              try {
+                var fields = res.meta.fields.map(function (f) { return String(f).trim(); });
+                if (fields.length && res.data.length) {
+                  packs.push({ name: (file.name.replace(/\.csv$/i, "") || file.name), sourceFile: file.name, fields: fields, rowsArr: res.data.map(function (o) { return fields.map(function (f) { return o[f]; }); }) });
+                }
+              } catch (e) {}
+              if (--pending === 0) resolve(packs);
+            },
+            error: function () { if (--pending === 0) resolve(packs); }
+          });
+        }
+      });
+    });
+  }
+
+  function buildReviewState(packs) {
+    // Infer mapping per file (deterministic local pre-profile), then the join graph.
+    var files = packs.map(function (p, i) {
+        var mapping = Core.Entities.bindConcepts(Core.inferMapping(p.fields, p.rowsArr));
+      return {
+        idx: i, name: p.name, sourceFile: p.sourceFile, fields: p.fields, rowsArr: p.rowsArr,
+        mapping: mapping,
+        profile: Core.Onboarding.preProfile(p.name, p.fields, p.rowsArr, mapping)
+      };
+    });
+    // Build graph edges via automatic shared-concept detection.
+    var dsForGraph = files.map(function (f) { return { id: "f" + f.idx, name: f.name, rowsArr: f.rowsArr, mapping: f.mapping }; });
+    var graph = Core.Onboarding.resolveJoinGraph(dsForGraph, []);
+    // Persist review by shape hash (auto-apply next time).
+    var key = Core.Onboarding.shapesKey(files.map(function (f) { return { name: f.sourceFile || f.name, fields: f.fields }; }));
+    reviewState = {
+      key: key, files: files, graph: graph, decisions: {},
+      ids: dsForGraph.reduce(function (m, d, i) { m[d.id] = i; return m; }, {})
+    };
+    var stored = Core.Onboarding.loadReview();
+    if (stored && stored.key === key && stored.decisions) {
+      reviewState.decisions = stored.decisions;
+    }
+    return reviewState;
+  }
+
+  function renderReviewBoard() {
+    var board = document.getElementById("reviewBoard");
+    if (!board || !reviewState) return;
+    board.style.display = "block";
+    var filesEl = document.getElementById("reviewFiles");
+    var joinsEl = document.getElementById("reviewJoins");
+    var planEl = document.getElementById("reviewPlan");
+    filesEl.textContent = ""; joinsEl.textContent = ""; planEl.textContent = "";
+    var st = reviewState;
+    document.getElementById("reviewMsg").textContent = st.graph.paths.length
+      ? st.files.length + " files, " + st.graph.paths.length + " connected path(s) proposed — confirm before anything loads."
+      : st.files.length + " files reviewed — no connected joins detected (each loads standalone).";
+    // Per-file cards (diff vs local inference is the local profile itself shown as chips).
+    st.files.forEach(function (f) {
+      var card = document.createElement("div");
+      card.className = "card";
+      card.style.cssText = "padding:8px 12px;margin-bottom:8px;font-size:.8rem";
+      var t = document.createElement("div");
+      t.style.cssText = "font-weight:600";
+      t.textContent = f.name + " — " + f.rowsArr.length + " rows" + (f.profile.dateRange ? " (" + f.profile.dateRange.join(" → ") + ")" : "");
+      card.appendChild(t);
+      var chips = document.createElement("div");
+      chips.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;margin-top:4px";
+      f.profile.columns.forEach(function (c) {
+        var s = document.createElement("span");
+        s.className = "tax-chip";
+        s.title = c.type + "/" + c.role + (c.concept ? "/" + c.concept : "") + " · " + c.distinct + " distinct, " + c.nulls + " null · e.g. " + c.samples.join(", ");
+        s.textContent = c.name + (c.concept ? " (" + c.concept + ")" : "");
+        chips.appendChild(s);
+      });
+      card.appendChild(chips);
+      filesEl.appendChild(card);
+    });
+    // Joins: render connected paths with per-edge accept/decline.
+    if (!st.graph.paths.length) {
+      var pn = document.createElement("div");
+      pn.className = "muted";
+      pn.textContent = "No connected paths proposed. Files can still load standalone.";
+      joinsEl.appendChild(pn);
+    } else {
+      var jh = document.createElement("div");
+      jh.style.cssText = "font-weight:600;font-size:.85rem;margin:4px 0";
+      jh.textContent = "Proposed join paths:";
+      joinsEl.appendChild(jh);
+      st.graph.paths.forEach(function (path, pi) {
+        var pdiv = document.createElement("div");
+        pdiv.className = "card";
+        pdiv.style.cssText = "padding:8px 10px;margin:6px 0;font-size:.8rem";
+        var labels = path.nodes.map(function (d) {
+          var f = st.files[st.ids[d]];
+          return f ? f.name : d;
+        }).join(" ← ");
+        var head = document.createElement("div");
+        head.style.cssText = "font-weight:600;margin-bottom:4px";
+        head.textContent = "Path " + (pi + 1) + ": " + labels;
+        pdiv.appendChild(head);
+        path.edges.forEach(function (e) {
+          var ea = st.files[st.ids[e.from]], eb = st.files[st.ids[e.to]];
+          var dKey = e.from + "|" + e.to;
+          var accepted = st.decisions[dKey];
+          var row = document.createElement("div");
+          row.style.cssText = "display:flex;gap:8px;align-items:center;margin:3px 0";
+          var txt = document.createElement("span");
+          txt.style.cssText = "flex:1;min-width:0";
+          txt.textContent = (ea ? ea.name : e.from) + "[" + e.fromCol + "] → " + (eb ? eb.name : e.to) + "[" + e.toCol + "] (" + (e.concept || "?") + ")" + (e.rationale ? " — " + e.rationale : "");
+          var btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = accepted === false ? "Declined" : (accepted ? "Accepted ✓" : "Accept");
+          btn.style.cssText = "font-size:.72rem";
+          btn.addEventListener("click", function () {
+            st.decisions[dKey] = accepted === false ? undefined : (accepted ? false : true);
+            Core.Onboarding.saveReview({ key: st.key, decisions: st.decisions });
+            renderReviewBoard();
+          });
+          row.appendChild(txt); row.appendChild(btn);
+          pdiv.appendChild(row);
+        });
+        joinsEl.appendChild(pdiv);
+      });
+    }
+    // Analysis plan (deterministic local suggestion; AI could refine but never required).
+    var kinds = {};
+    st.files.forEach(function (f) {
+      var hasAmount = f.mapping.some(function (c) { return c.role === "measure"; });
+      var hasLead = f.mapping.some(function (c) { return c.concept === "lead"; });
+      var hasOpp = f.mapping.some(function (c) { return c.concept === "opportunity"; });
+      var kind = hasOpp ? "opportunities" : (hasLead ? "leads" : (hasAmount ? "transactions" : "generic"));
+      kinds[f.name] = kind;
+    });
+    planEl.appendChild((function () {
+      var ph = document.createElement("div");
+      ph.style.cssText = "font-weight:600;font-size:.85rem;margin:4px 0";
+      ph.textContent = "Analysis plan (local inference)";
+      planEl.appendChild(ph);
+      var ul = document.createElement("ul");
+      ul.style.cssText = "font-size:.8rem;margin:4px 0 0 18px";
+      st.files.forEach(function (f) {
+        var li = document.createElement("li");
+        li.textContent = f.name + " → " + kinds[f.name] + " metric pack" + (f.mapping.some(function (c) { return c.role === "text"; }) ? " + text insights" : "");
+        ul.appendChild(li);
+      });
+      return ul;
+    })());
+  }
+
+  function reviewDecideAll(mode) {
+    if (!reviewState) return;
+    var st = reviewState;
+    if (mode === "reject") { st.decisions = {}; st.graph.paths.forEach(function (p) { p.edges.forEach(function (e) { st.decisions[e.from + "|" + e.to] = false; }); }); }
+    else { st.graph.paths.forEach(function (p) { p.edges.forEach(function (e) { st.decisions[e.from + "|" + e.to] = mode === "accept"; }); }); }
+    Core.Onboarding.saveReview({ key: st.key, decisions: st.decisions });
+    renderReviewBoard();
+  }
+
+  function reviewApply() {
+    if (!reviewState) return;
+    var st = reviewState;
+      if (!st.files.length) { showError("Nothing to apply — the review is empty."); return; }
+      // Decide everything to accept when Apply is hit without explicit edge decisions.
+      st.graph.paths.forEach(function (p) {
+        p.edges.forEach(function (e) {
+          if (st.decisions[e.from + "|" + e.to] === undefined) st.decisions[e.from + "|" + e.to] = true;
+        });
+      });
+      Core.Onboarding.saveReview({ key: st.key, decisions: st.decisions });
+      // 1) Load every file via the normal mapping-confirmation path (auto-applies stored mapping).
+      var packs = st.files.map(function (f) {
+        return { name: f.name, sourceFile: f.sourceFile, fields: f.fields, rowsArr: f.rowsArr, mapping: f.mapping };
+    });
+    reviewFilesToApply = packs;
+      pendingQueue = packs.slice();
+      nextPendingSource(); // load the first pack through the normal mapping-confirmation path
+      // 2) After the queue drains, declare the accepted joins on the loaded datasets.
+      var edges = [];
+      st.graph.paths.forEach(function (p) {
+        p.edges.forEach(function (e) { if (st.decisions[e.from + "|" + e.to] !== false) edges.push(e); });
+      });
+      var idx = st.ids;
+      (function waitAndDeclare() {
+        // Defer until every queued file has been confirmed/loaded.
+        if (pendingQueue.length || pendingFile) { setTimeout(waitAndDeclare, 150); return; }
+        try {
+          edges.forEach(function (e) {
+            var ra = datasetById(datasetsRef(e.from, idx));
+            var rb = datasetById(datasetsRef(e.to, idx));
+            if (!ra || !rb || !ra.hasData || !rb.hasData) return;
+            var index = Core.Joins.buildIndex(rb.rowsArr, rb.mapping, e.concept);
+            if (!index) return;
+            if (declaredJoins.some(function (j) { return j.from === ra.id && j.to === rb.id && j.fromConcept === e.concept; })) return;
+            declaredJoins.push({ id: "rb" + Date.now().toString(36) + Math.floor(Math.random() * 1e4), from: ra.id, fromConcept: e.concept, to: rb.id, toConcept: e.concept, matchRate: 0.5, distinctKeys: Object.keys(index).length, index: index });
+          });
+          renderJoins(); renderOverview(); renderTabs();
+        } catch (err) { /* joins are best-effort; datasets still load */ }
+      })();
+      document.getElementById("reviewBoard").style.display = "none";
+      document.getElementById("reviewStatus").textContent = "";
+      showError("");
+    }
+
+    // Resolve a review file index → the dataset id by its source file name.
+    function datasetsRef(fileIdx, ids) {
+      var f = reviewState && reviewState.files[ids && ids[fileIdx] != null ? ids[fileIdx] : fileIdx];
+      if (!f) return null;
+      for (var i = 0; i < datasets.length; i++) if (datasets[i].sourceFile === f.sourceFile) return datasets[i].id;
+      return null;
+    }
+
+  document.getElementById("folderBtn").addEventListener("click", function () {
+    document.getElementById("folderInput").click();
+  });
+  document.getElementById("folderInput").addEventListener("change", function () {
+    var files = Array.prototype.slice.call(this.files || []);
+    this.value = "";
+    if (!files.length) return;
+    document.getElementById("reviewStatus").textContent = "Reading " + files.length + " files…";
+    folderFilePacks(files).then(function (packs) {
+      if (!packs.length) { showError("No usable data files found in that folder (each needs a header row + data)."); return; }
+      buildReviewState(packs);
+      renderReviewBoard();
+      document.getElementById("reviewBoard").style.display = "block";
+      document.getElementById("reviewStatus").textContent = "";
+    });
+  });
+  document.getElementById("reviewAcceptAllBtn").addEventListener("click", function () { reviewDecideAll("accept"); reviewApply(); });
+    document.getElementById("reviewAcceptInferredBtn").addEventListener("click", function () { reviewDecideAll("inferred"); reviewApply(); });
+  document.getElementById("reviewRejectBtn").addEventListener("click", function () { reviewDecideAll("reject"); });
+  document.getElementById("reviewCloseBtn").addEventListener("click", function () { document.getElementById("reviewBoard").style.display = "none"; });
 
   function showMappingPanel() {
     if (!pendingFile) return;
