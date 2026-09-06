@@ -154,6 +154,29 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   .md tbody tr:nth-child(even) { background: var(--row-alt); }
   .error-banner { background: rgba(248,113,113,.12); border: 1px solid var(--bad); color: var(--bad); border-radius: 8px; padding: 10px 14px; font-size: .9rem; display: none; }
   .muted { color: var(--muted); font-size: .85rem; }
+    /* Phase 7: verification layer */
+    .cite-chip { display: inline-block; background: rgba(56,189,248,.15); color: var(--accent); border: 1px solid rgba(56,189,248,.4); border-radius: 9px; padding: 0 6px; font-size: .72rem; font-weight: 600; cursor: pointer; vertical-align: 1px; }
+    .cite-chip:hover { background: rgba(56,189,248,.28); }
+    .unverified { color: var(--bad); text-decoration: underline dotted var(--bad); cursor: help; }
+    .verify-foot { margin-top: 10px; padding: 6px 8px; border-radius: 6px; font-size: .75rem; border: 1px solid var(--border); }
+    .verify-good { color: #15803d; border-color: rgba(21,128,61,.4); background: rgba(21,128,61,.08); }
+    .verify-bad { color: var(--bad); border-color: rgba(248,113,113,.4); background: rgba(248,113,113,.08); }
+    .verify-notes { margin-top: 3px; white-space: normal; }
+    .tool-detail { margin-top: 8px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; font-size: .75rem; }
+    .tool-detail pre { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; font-size: .72rem; }
+    .prov { font-size: .72rem; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+    .math-btn { font-size: .72rem; margin-top: 8px; padding: 2px 8px; background: transparent; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); cursor: pointer; }
+    .math-btn:hover { color: var(--text); border-color: var(--accent); }
+    .kpi-math { margin-top: 8px; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; font-size: .75rem; line-height: 1.55; display: none; }
+    .kpi-math.open { display: block; }
+    .math-row { margin: 3px 0; }
+    .math-row b { font-weight: 600; }
+    .rows-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .rows-modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; max-width: 90vw; max-height: 80vh; overflow: auto; padding: 14px; }
+    .rows-modal h4 { margin: 0 0 8px; font-size: .9rem; }
+    .rows-modal table { border-collapse: collapse; font-size: .75rem; }
+    .rows-modal td, .rows-modal th { border: 1px solid var(--border); padding: 3px 8px; }
+    .rows-modal .close { float: right; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } aside.sidebar { position: static; } }
     .ds-tabs { max-width: 1200px; margin: 14px auto 0; padding: 0 16px; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -169,7 +192,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.10 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.12 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
@@ -240,21 +263,24 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       <div id="overviewPanel"></div>
       <div id="datasetView">
       <div class="kpi-row">
-        <div class="card kpi-card"><div class="label">Total units</div><div class="value" id="kpiTotal">–</div></div>
-        <div class="card kpi-card"><div class="label">Top product</div><div class="value" id="kpiTop">–</div><div class="sub" id="kpiTopSub"></div></div>
-        <div class="card kpi-card"><div class="label">Bottom product</div><div class="value" id="kpiBottom">–</div><div class="sub" id="kpiBottomSub"></div></div>
-        <div class="card kpi-card"><div class="label">Trend</div><div class="value" id="kpiTrend">–</div><div class="sub" id="kpiTrendSub"></div></div>
-        <div class="card kpi-card"><div class="label">Seasonality</div><div class="value" id="kpiSeason">–</div><div class="sub" id="kpiSeasonSub"></div></div>
+              <div class="card kpi-card"><div class="label" id="kpiTotalLabel">Total units</div><div class="value" id="kpiTotal">–</div><button type="button" class="math-btn" data-math="total">Show the math</button><div class="kpi-math" id="kpiMathtotal"></div></div>
+                            <div class="card kpi-card"><div class="label" id="kpiTopLabel">Top product</div><div class="value" id="kpiTop">–</div><div class="sub" id="kpiTopSub"></div><button type="button" class="math-btn" data-math="top">Show the math</button><div class="kpi-math" id="kpiMathtop"></div></div>
+                            <div class="card kpi-card"><div class="label" id="kpiBottomLabel">Bottom product</div><div class="value" id="kpiBottom">–</div><div class="sub" id="kpiBottomSub"></div><button type="button" class="math-btn" data-math="bottom">Show the math</button><div class="kpi-math" id="kpiMathbottom"></div></div>
+                            <div class="card kpi-card"><div class="label" id="kpiTrendLabel">Trend</div><div class="value" id="kpiTrend">–</div><div class="sub" id="kpiTrendSub"></div><button type="button" class="math-btn" data-math="trend">Show the math</button><div class="kpi-math" id="kpiMathtrend"></div></div>
+                            <div class="card kpi-card"><div class="label" id="kpiSeasonLabel">Seasonality</div><div class="value" id="kpiSeason">–</div><div class="sub" id="kpiSeasonSub"></div><button type="button" class="math-btn" data-math="season">Show the math</button><div class="kpi-math" id="kpiMathseason"></div></div>
       </div>
+            <div class="prov" id="kpiProv"></div>
 
       <div class="card">
         <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">Units sold over time<button id="exportCsvBtn" type="button" title="Download the current filtered rows as CSV (stays in your browser)">Export CSV</button></div>
         <div id="chartWrap"><canvas id="mainChart"></canvas></div>
+        <div class="prov" id="mainChartProv"></div>
       </div>
 
       <div class="card">
         <div class="panel-title">Sales by country</div>
         <div class="country-list" id="countryList"><span class="muted">No data loaded</span></div>
+        <div class="prov" id="countryProv"></div>
       </div>
 
       <div class="card">
@@ -1852,6 +1878,10 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   }
   Tools.parseToolBlock = parseToolBlock;
 
+  // One resultId sequence for every tool result — the model cites these, and the Phase 7
+  // verification layer checks every reported number against the result they came from.
+  function rid() { return "r" + (++_toolSeq); }
+
   // Resolve a dataset in ctx by id, or default to the first data-bearing dataset.
   function ctxDataset(ctx, id) {
     var ds = (ctx && ctx.datasets) || [];
@@ -1870,14 +1900,14 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         var out = (ctx.datasets || []).map(function (d) {
           return { id: d.id, name: d.name, kind: d.kind, rowCount: d.rowCount || 0, dateRange: d.dateRange || null, hasData: d.hasData !== false };
         });
-        return { datasets: out };
+        return { resultId: rid(), datasets: out };
       }
       case "describe_schema": {
         if (!ds) return { error: "Unknown or missing datasetId '" + args.datasetId + "'." };
         var cols = (ds.mapping || []).map(function (c) {
           return { name: c.name, type: c.type, role: c.role, concept: c.concept || null, distinct: c.distinctCount != null ? c.distinctCount : null, nulls: c.nullCount != null ? c.nullCount : null, samples: c.samples || [] };
         });
-        return { datasetId: ds.id, name: ds.name, rowCount: (ds.rowsArr || []).length, columns: cols };
+        return { resultId: rid(), datasetId: ds.id, name: ds.name, rowCount: (ds.rowsArr || []).length, columns: cols };
       }
       case "query": {
         if (!ds || !ds.mapping) return { error: "No dataset for query; pass datasetId or load a dataset first." };
@@ -1919,7 +1949,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         if (fromMs == null || toMs == null) return { error: "compare_periods requires fromMs and toMs." };
         var spec = { field: args.metric || "amount", agg: args.agg || "sum" };
         var cmp = Metrics.comparePeriods(ds.rowsArr, ds.mapping, spec, { fromMs: fromMs, toMs: toMs, datasetId: ds.id });
-        return { metric: spec.field, agg: spec.agg, current: cmp.current.value, prior: cmp.prior ? cmp.prior.value : null, yearAgo: cmp.yearAgo ? cmp.yearAgo.value : null, deltaAbs: cmp.deltaAbs, deltaPct: cmp.deltaPct };
+        return { resultId: rid(), metric: spec.field, agg: spec.agg, current: cmp.current.value, prior: cmp.prior ? cmp.prior.value : null, yearAgo: cmp.yearAgo ? cmp.yearAgo.value : null, deltaAbs: cmp.deltaAbs, deltaPct: cmp.deltaPct };
       }
       case "create_chart": {
         var spec = args.spec || args;
@@ -1927,19 +1957,19 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         if (!v.valid) return { error: "Invalid chart spec: " + v.errors.join("; ") };
         if (!ctx.createChart) return { error: "Chart creation is not available in this context." };
         var id = ctx.createChart(spec);
-        return { chartId: id, title: spec.title || spec.type };
+        return { resultId: rid(), chartId: id, title: spec.title || spec.type };
       }
       case "get_chart_data": {
         if (!ctx.getChartData) return { error: "Chart data access is not available in this context." };
         var data = ctx.getChartData(args.chartId);
         if (!data) return { error: "Unknown chartId '" + args.chartId + "'." };
-        return data;
+        return Object.assign({ resultId: rid() }, data);
       }
       case "extract_text_insights": {
         if (!ds || !ds.mapping) return { error: "No dataset for extract_text_insights." };
         var col = Charts.fieldColumn(ds.mapping, args.field);
         if (!col) return { error: "Unknown text field '" + args.field + "'." };
-        return { datasetId: ds.id, field: args.field, taxonomy: [], sentiment: null, themes: [], note: "Phase 8 text pipeline not yet implemented." };
+        return { resultId: rid(), datasetId: ds.id, field: args.field, taxonomy: [], sentiment: null, themes: [], note: "Phase 8 text pipeline not yet implemented." };
       }
       default:
         return { error: "Unknown tool '" + name + "'. Valid tools: " + TOOL_DEFS.map(function (t) { return t.name; }).join(", ") };
@@ -1976,6 +2006,103 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     return { content: "(stopped after " + turns + " tool turns — set a higher maxTurns to continue)", turns: turns, results: results, hitCap: true };
   }
   Tools.toolLoop = toolLoop;
+
+  // ---- Phase 7: verification layer — the source data is the authority ----
+  // Deterministic claim checking: every number in the model's answer must be traceable to a
+  // tool result (cited resultId), and unverified figures are surfaced, never silently deleted.
+  var Verify = {};
+  var VERIFY_REL_TOL = 1e-6; // "small tolerance": match when |a-b| <= max(1e-6, |b| * 1e-6)
+
+  // All numbers in free text (thousands separators and decimals supported).
+    // Inline citations like [r1] are meta, not claims — excluded from claim checking.
+    function extractNumbers(text) {
+      var out = [];
+      var s = String(text == null ? "" : text).replace(/\[r\d+\]/gi, " ");
+      var re = /-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?/g;
+      var m;
+      while ((m = re.exec(s)) !== null) {
+        var v = parseFloat(m[0].replace(/,/g, ""));
+        if (Number.isFinite(v)) out.push({ str: m[0], num: v });
+      }
+      return out;
+    }
+  Verify.extractNumbers = extractNumbers;
+
+  // Every numeric leaf of a tool result payload (numbers + numeric strings), recursively.
+  function collectResultNumbers(value, out) {
+    out = out || [];
+    if (value == null) return out;
+    if (typeof value === "number") { if (Number.isFinite(value)) out.push(value); return out; }
+    if (typeof value === "string") { var v = parseFloat(value.replace(/,/g, "")); if (!isNaN(v) && String(value).trim() !== "") out.push(v); return out; }
+    if (Array.isArray(value)) { value.forEach(function (x) { collectResultNumbers(x, out); }); return out; }
+    if (typeof value === "object") { Object.keys(value).forEach(function (k) { collectResultNumbers(value[k], out); }); }
+    return out;
+  }
+  Verify.collectResultNumbers = collectResultNumbers;
+
+  // Citation pattern [rN] — the model cites the resultId that produced a figure.
+  function parseCitations(text) {
+    var out = [], re = /\[r(\d+)\]/g, m;
+    while ((m = re.exec(String(text == null ? "" : text))) !== null) out.push("r" + m[1]);
+    return out;
+  }
+  Verify.parseCitations = parseCitations;
+
+  // Match every number in the text against every number in this turn's tool results within a
+  // small tolerance. hasEmptyResult is true when any tool returned zero rows — an unverified
+  // figure in that situation is a flagged fabrication, not just an unknown.
+  function checkClaims(text, results) {
+    var byId = {}, numbers = [], hasEmptyResult = false;
+    (results || []).forEach(function (r) {
+      var res = r.result || {};
+      var id = res.resultId || ("r" + (Object.keys(byId).length + 1)); // positional fallback if a tool ever lacked an id
+      byId[id] = r;
+      if (res.count === 0 || (res.rows && !res.rows.length) || (res.datasets && !res.datasets.length)) hasEmptyResult = true;
+      numbers = numbers.concat(collectResultNumbers(res));
+    });
+    var ns = extractNumbers(text);
+    var verified = [], unverified = [];
+    ns.forEach(function (n) {
+      var hit = false;
+      for (var i = 0; i < numbers.length; i++) {
+        var b = numbers[i];
+        if (Math.abs(n.num - b) <= Math.max(VERIFY_REL_TOL, Math.abs(b) * VERIFY_REL_TOL)) { hit = true; break; }
+      }
+      if (hit) verified.push(n); else unverified.push(n);
+    });
+    return { total: ns.length, verified: verified, unverified: unverified, citations: parseCitations(text), hasEmptyResult: hasEmptyResult, results: results || [] };
+  }
+  Verify.checkClaims = checkClaims;
+
+  // Turn [rN] citations into chip markup the app binds click handlers to (safe inline HTML after sanitization).
+  function renderCitations(text) {
+    return String(text == null ? "" : text).replace(/\[r(\d+)\]/g, '<span class="cite-chip" data-rid="r$1" title="Show the query, filters, and rows behind result r$1">r$1</span>');
+  }
+  Verify.renderCitations = renderCitations;
+
+  // Definition registry — one place where every metric definition lives (PRD Phase 7),
+  // surfaced on hover and used in provenance footers and "Show the math".
+  Verify.DEFINITIONS = (function () {
+    var defs = {};
+    Object.keys(METRIC_PACKS).forEach(function (kind) {
+      METRIC_PACKS[kind].forEach(function (d) { defs[d.id] = { definition: d.definition, agg: d.agg, field: d.field }; });
+    });
+    defs.totalUnits = { definition: "Sum of the units/amount measure over the filtered rows of the active dataset.", agg: "sum", field: "Sold_Units" };
+    defs.topProduct = { definition: "Dimension value with the highest summed units in the filtered view.", agg: "sum", field: "product" };
+    defs.bottomProduct = { definition: "Dimension value with the lowest summed units in the filtered view.", agg: "sum", field: "product" };
+    defs.trend = { definition: "Linear-regression slope of the per-bucket units series over the filtered period, shown as units/bucket and as a % of the mean.", agg: "slope", field: "units" };
+    defs.seasonality = { definition: "Calendar month-of-year with the strongest average units per day versus the overall mean.", agg: "monthly average", field: "units" };
+    defs.rowsUsed = { definition: "Number of rows selected by the current filter set (products + countries + date range).", agg: "count", field: "rows" };
+    return defs;
+  })();
+  Verify.getDefinition = function (id) { return Verify.DEFINITIONS[id] || null; };
+  Verify.toolDescription = function (name, args) { // human line for a tool call, e.g. "query by month (123 rows)"
+    args = args || {};
+    if (name === "query") return "query · dimensions " + JSON.stringify(args.dimensions || []) + " · measures " + JSON.stringify(args.measures || []) + (args.limit ? " · limit " + args.limit : "");
+    if (name === "compare_periods") return "compare_periods · " + (args.metric || "amount") + " (" + (args.agg || "sum") + ")";
+    if (name === "create_chart") return "create_chart · " + ((args.spec && args.spec.type) || args.type || "chart");
+    return name;
+  };
 
   // Deterministic opening profile for a dataset (rendered immediately, never blocks on the model).
   // `rows` are the normalized object rows from the app's filtered view ({date, articleId, countryCode, units}).
@@ -2125,7 +2252,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   AI.filterKey = filterKey;
 
   // ---- Export all modules + legacy aliases on the core namespace ----
-  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools };
+  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools, Verify: Verify };
   // Legacy top-level aliases (backward compat with existing tests)
   api.normalizeHeader = normalizeHeader;
   api.parseDateValue = parseDateValue;
@@ -2425,6 +2552,19 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     });
   }
 
+    // Confirmed roll-ups are saved with the mapping (PRD Phase 2: "Confirmed hierarchies are saved with the mapping"),
+    // keyed by the same header-set hash as conflicts, so re-loading the same file shape keeps them confirmed.
+    var HIER_LS_PREFIX = "salesHier:";
+    function loadHierChoices(key) {
+      try { return JSON.parse(localStorage.getItem(HIER_LS_PREFIX + key)) || []; } catch (e) { return []; }
+    }
+    function saveHierChoice(key, child, parent) {
+      var set = loadHierChoices(key);
+      var entry = child + "\u2192" + parent;
+      if (set.indexOf(entry) === -1) set.push(entry);
+      try { localStorage.setItem(HIER_LS_PREFIX + key, JSON.stringify(set)); } catch (e) {}
+    }
+
   // Phase 2: entity review inside the mapping flow — detected ID/label pairs, conflicts with an
   // explicit resolution choice (never silent), fuzzy matches in the uncertain band as a review
   // queue, and hierarchy suggestions offered for confirmation.
@@ -2503,27 +2643,51 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       });
     }
 
-    // Hierarchy suggestions: offered for confirmation, not applied silently.
-    var hier = Core.Entities.detectHierarchy(rowsArr, cols);
-    if (hier.length) {
-      var hh = document.createElement("div");
-      hh.style.cssText = "font-size:.85rem;font-weight:600;margin-top:10px";
-      hh.textContent = "Possible roll-ups detected:";
-      box.appendChild(hh);
-      hier.forEach(function (p) {
-        var row = document.createElement("div");
-        row.style.cssText = "font-size:.82rem;margin:4px 0;display:flex;gap:10px;align-items:center";
-        var lab = document.createElement("span");
-        lab.textContent = p.child + " rolls up into " + p.parent + " (every value of " + p.child + " coincides with a single " + p.parent + ")";
-        row.appendChild(lab);
-        var okBtn = document.createElement("button");
-        okBtn.type = "button";
-        okBtn.textContent = "Confirm roll-up";
-        okBtn.addEventListener("click", function () { okBtn.disabled = true; okBtn.textContent = "Confirmed ✓"; });
-        row.appendChild(okBtn);
-        box.appendChild(row);
-      });
-    }
+    // Hierarchy suggestions: offered for confirmation, not applied silently. Confirmations persist
+        // per file shape; a "Confirm all roll-ups" option confirms every detected hierarchy at once.
+        var hier = Core.Entities.detectHierarchy(rowsArr, cols);
+        if (hier.length) {
+          var hh = document.createElement("div");
+          hh.style.cssText = "font-size:.85rem;font-weight:600;margin-top:10px";
+          hh.textContent = "Possible roll-ups detected:";
+          box.appendChild(hh);
+          var hierKey = Core.mappingKey(pendingFile.fields);
+          var hierConfirmed = loadHierChoices(hierKey);
+          var allDone = hier.every(function (p) { return hierConfirmed.indexOf(p.child + "\u2192" + p.parent) !== -1; });
+          if (!allDone) {
+            var allRow = document.createElement("div");
+            allRow.style.cssText = "font-size:.82rem;margin:2px 0 6px;display:flex;gap:10px;align-items:center";
+            var allBtn = document.createElement("button");
+            allBtn.type = "button";
+            allBtn.textContent = "Confirm all roll-ups";
+            allBtn.addEventListener("click", function () {
+              hier.forEach(function (p) { saveHierChoice(hierKey, p.child, p.parent); });
+              renderEntityReview();
+            });
+            allRow.appendChild(allBtn);
+            box.appendChild(allRow);
+          }
+          hier.forEach(function (p) {
+            var row = document.createElement("div");
+            row.style.cssText = "font-size:.82rem;margin:4px 0;display:flex;gap:10px;align-items:center";
+            var lab = document.createElement("span");
+            lab.textContent = p.child + " rolls up into " + p.parent + " (every value of " + p.child + " coincides with a single " + p.parent + ")";
+            row.appendChild(lab);
+            if (hierConfirmed.indexOf(p.child + "\u2192" + p.parent) !== -1) {
+              var done = document.createElement("span");
+              done.style.cssText = "color:#15803d";
+              done.textContent = "Confirmed ✓";
+              row.appendChild(done);
+            } else {
+              var okBtn = document.createElement("button");
+              okBtn.type = "button";
+              okBtn.textContent = "Confirm roll-up";
+              okBtn.addEventListener("click", function () { saveHierChoice(hierKey, p.child, p.parent); renderEntityReview(); });
+              row.appendChild(okBtn);
+            }
+            box.appendChild(row);
+          });
+        }
 
     if (!pairs.length && !conflictItems.length && !(fuzzyState.queue || []).length && !hier.length) {
       var none = document.createElement("div");
@@ -2667,6 +2831,10 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
           sub.style.cssText = "font-size:.8rem";
           sub.textContent = "Filtered: " + fb.rows.length.toLocaleString() + " rows" + (fb.notes.length ? " — skipped: " + fb.notes.join("; ") : "");
           box.appendChild(sub);
+                    var prov = document.createElement("div");
+                    prov.className = "prov";
+                    prov.textContent = provFor(d, fb.rows);
+                    box.appendChild(prov);
           // Phase 4: metric engine — traceable metrics for this dataset's kind (declarative, deterministic).
           if (d.mapping && d.rowsArr) {
             var mh = document.createElement("div");
@@ -2986,7 +3154,11 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       var canvas = document.createElement("canvas");
       wrap.appendChild(canvas);
       box.appendChild(wrap);
-      el.appendChild(box);
+            var prov = document.createElement("div");
+            prov.className = "prov";
+            prov.textContent = provFor(rec, rec ? filteredRowsFor(rec).rows : [], "metric: " + (c.spec && c.spec.y && c.spec.y[0] ? c.spec.y[0].agg + "(" + c.spec.y[0].field + ")" : "?"));
+            box.appendChild(prov);
+            el.appendChild(box);
       if (rec && rec.mapping) drawSavedChart(canvas, rec, c.spec);
     });
   }
@@ -3078,14 +3250,93 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   }
 
   // ---- Rendering ----
-  function renderAll() {
-    var rows = filteredRows();
-    var stats = Core.computeStats(rows, store.get("aggMode"));
-    renderKpis(stats);
-    renderChart(stats.series);
-    renderCountries(stats.byCountry);
-    renderChartList(); // Phase 5: saved spec-driven charts re-render against the current filters
-  }
+    // Phase 7 helpers: provenance lines and "show the math" panels (source data is the authority).
+    function filterStateText() {
+      var range = dateRange();
+      return store.get("selectedProducts").length + " products · " + store.get("selectedCountries").length + " countries · " +
+        "date " + (range[0] == null ? "all" : new Date(range[0]).toISOString().slice(0, 10)) + " → " + (range[1] == null ? "all" : new Date(range[1]).toISOString().slice(0, 10));
+    }
+    function provFor(rec, rows, extra) {
+      var parts = [];
+      if (rec) {
+        parts.push("Source: " + rec.name + (rec.sourceFile && rec.sourceFile !== rec.name ? " (" + rec.sourceFile + ")" : ""));
+        if (rec.loadedAt) parts.push("loaded " + new Date(rec.loadedAt).toLocaleString());
+      }
+      parts.push(filterStateText());
+      parts.push("rows used: " + (rows ? rows.length : "?"));
+      if (extra) parts.push(extra);
+      return parts.join(" · ");
+    }
+    function provEl(id, rec, rows) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = rows && rows.length ? provFor(rec, rows) : "";
+    }
+    function showRowsModal(rows, title) {
+      var old = document.querySelector(".rows-modal-backdrop");
+      if (old) old.remove();
+      var bd = document.createElement("div");
+      bd.className = "rows-modal-backdrop";
+      var modal = document.createElement("div");
+      modal.className = "rows-modal";
+      var h = document.createElement("h4");
+      h.textContent = (title || "Contributing rows") + " — first " + Math.min(rows.length, 100) + " of " + rows.length;
+      var close = document.createElement("button");
+      close.type = "button"; close.className = "close"; close.textContent = "✕";
+      close.addEventListener("click", function () { bd.remove(); });
+      h.appendChild(close);
+      var tbl = document.createElement("table");
+      var keys = rows.length ? Object.keys(rows[0]) : [];
+      var thead = document.createElement("thead");
+      var trh = document.createElement("tr");
+      keys.forEach(function (k) { var th = document.createElement("th"); th.textContent = k; trh.appendChild(th); });
+      thead.appendChild(trh);
+      var tbody = document.createElement("tbody");
+      rows.slice(0, 100).forEach(function (r) {
+        var tr = document.createElement("tr");
+        keys.forEach(function (k) {
+          var td = document.createElement("td");
+          var v = r[k];
+          td.textContent = v && typeof v === "object" && v.toISOString ? v.toISOString().slice(0, 10) : String(v == null ? "" : v);
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(thead); tbl.appendChild(tbody);
+      modal.appendChild(h); modal.appendChild(tbl);
+      bd.appendChild(modal);
+      document.body.appendChild(bd);
+      bd.addEventListener("click", function (e) { if (e.target === bd) bd.remove(); });
+    }
+    function fillKpiMath(kpiId, defId, rows, extraLines) {
+          var el = document.querySelector("#kpiMath" + kpiId);
+          if (!el) return;
+          var def = Core.Verify.getDefinition(defId);
+          var html = "";
+          if (def) html += '<div class="math-row"><b>Definition:</b> ' + Core.Text.escapeHtml(def.definition) + '</div>';
+          html += '<div class="math-row"><b>Aggregation:</b> ' + Core.Text.escapeHtml((def && def.agg) || "sum") + '</div>';
+          html += '<div class="math-row"><b>Filters:</b> ' + Core.Text.escapeHtml(filterStateText()) + '</div>';
+          html += '<div class="math-row"><b>Rows used:</b> ' + (rows ? rows.length : "?") + '</div>';
+          var rec = currentChartDataset();
+          if (rec) html += '<div class="math-row"><b>Source:</b> ' + Core.Text.escapeHtml(rec.name + (rec.sourceFile && rec.sourceFile !== rec.name ? " (" + rec.sourceFile + ")" : "")) + " · loaded " + Core.Text.escapeHtml(rec.loadedAt ? new Date(rec.loadedAt).toLocaleString() : "?") + '</div>';
+          (extraLines || []).forEach(function (l) { html += '<div class="math-row">' + Core.Text.escapeHtml(l) + '</div>'; });
+          html += '<button type="button" class="math-btn" data-rows="' + kpiId + '">View contributing rows</button>';
+          el.innerHTML = html;
+          el.setAttribute("data-filled", "1");
+        }
+
+    function renderAll() {
+      var rows = filteredRows();
+      var stats = Core.computeStats(rows, store.get("aggMode"));
+      renderKpis(stats, rows);
+      renderChart(stats.series);
+      renderCountries(stats.byCountry);
+      renderChartList(); // Phase 5: saved spec-driven charts re-render against the current filters
+      // Phase 7: provenance footers survive filter changes (source is authoritative).
+      var rec = currentChartDataset();
+      provEl("mainChartProv", rec, rows);
+      provEl("countryProv", rec, rows);
+      provEl("kpiProv", rec, rows);
+    }
 
   // Phase 2: group/join on the ID, display the label when one exists (entity registry).
   function displayId(id) {
@@ -3094,8 +3345,8 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     return d && d !== String(id) ? d + " (" + id + ")" : String(id);
   }
 
-  function renderKpis(s) {
-    document.getElementById("kpiTotal").textContent = s.total.toLocaleString();
+  function renderKpis(s, rows) {
+      document.getElementById("kpiTotal").textContent = s.total.toLocaleString();
     document.getElementById("kpiTop").textContent = s.topProducts.length ? displayId(s.topProducts[0][0]) : "–";
     document.getElementById("kpiTopSub").textContent = s.topProducts.length ? s.topProducts[0][1].toLocaleString() + " units" : "";
     var bp = s.bottomProduct;
@@ -3112,7 +3363,14 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       document.getElementById("kpiSeason").textContent = "No strong pattern";
       document.getElementById("kpiSeasonSub").textContent = "month-of-year variation < 5% of daily average";
     }
-  }
+      // Phase 7: definition registry surfaced on hover + "Show the math" per KPI (filled + toggled via delegation).
+            [["kpiTotalLabel", "totalUnits", "total"], ["kpiTopLabel", "topProduct", "top"], ["kpiBottomLabel", "bottomProduct", "bottom"], ["kpiTrendLabel", "trend", "trend"], ["kpiSeasonLabel", "seasonality", "season"]].forEach(function (t) {
+              var def = Core.Verify.getDefinition(t[1]);
+              var lab = document.getElementById(t[0]);
+              if (lab && def) lab.title = def.definition + " (agg: " + def.agg + ")";
+              fillKpiMath(t[2], t[1], rows, t[2] === "total" ? ["Aggregation applied: sum of the measure over " + (rows ? rows.length : 0) + " rows"] : []);
+            });
+                  }
 
   // Chart colors follow the active theme (CSS variables) so light/dark both look right.
     function chartTheme() {
@@ -3196,7 +3454,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
   function aiHistoryEl() { return document.getElementById("aiHistory"); }
 
-  function addAiEntry(question, answerText, isFallback) {
+  function addAiEntry(question, answerText, isFallback, opts) {
     var hist = aiHistoryEl();
     var note = document.getElementById("aiEmptyNote");
     if (note) note.remove();
@@ -3214,11 +3472,115 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       t.parentNode.insertBefore(w, t);
       w.appendChild(t);
     });
-    entry.appendChild(qDiv);
-    entry.appendChild(aDiv);
-    hist.insertBefore(entry, hist.firstChild); // newest on top
-    hist.scrollTop = 0;
-  }
+      // Phase 7: inline verification (unverified numbers marked, citations clickable, per-answer count).
+      var ver = opts && opts.verification;
+      if (ver) attachVerification(aDiv, ver);
+      if (opts && opts.toolLog && opts.toolLog.length) {
+        var logDiv = document.createElement("div");
+        logDiv.className = "muted";
+        logDiv.style.cssText = "font-size:.75rem;margin-top:6px";
+        logDiv.textContent = "Tools used: " + opts.toolLog.join(" · ");
+        aDiv.appendChild(logDiv);
+      }
+      entry.appendChild(qDiv);
+      entry.appendChild(aDiv);
+      hist.insertBefore(entry, hist.firstChild); // newest on top
+      hist.scrollTop = 0;
+    }
+
+    // Phase 7: mark every number with no matching tool result as "unverified" right in the answer
+    // (never deleted), make [rN] chips expand the query/filters/rows behind them, and report the
+    // per-answer verified count. A figure that cannot be traced after an empty tool result is
+    // flagged as a possible fabrication.
+    function attachVerification(aDiv, ver) {
+      var verifiedNums = ver.verified.map(function (v) { return v.num; });
+      function matches(n) {
+        for (var i = 0; i < verifiedNums.length; i++) {
+          var b = verifiedNums[i];
+          if (Math.abs(n - b) <= Math.max(1e-6, Math.abs(b) * 1e-6)) return true;
+        }
+        return false;
+      }
+      // Inline marking of unmatched numbers (skip code/pre and the chips themselves).
+      if (typeof NodeFilter !== "undefined") {
+        var walker = document.createTreeWalker(aDiv, NodeFilter.SHOW_TEXT, {
+          acceptNode: function (node) {
+            var p = node.parentNode;
+            if (p && ((p.tagName === "PRE" || p.tagName === "CODE") || (p.classList && (p.classList.contains("cite-chip") || p.classList.contains("verify-foot"))))) return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        });
+        var txtNodes = [];
+        var tn;
+        while ((tn = walker.nextNode()) !== null) txtNodes.push(tn);
+        var re = /-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?/g;
+        txtNodes.forEach(function (node) {
+          var text = node.nodeValue;
+          re.lastIndex = 0;
+          if (!re.test(text)) return;
+          re.lastIndex = 0;
+          var frag = document.createDocumentFragment();
+          var last = 0, m;
+          while ((m = re.exec(text)) !== null) {
+            if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+            var v = parseFloat(m[0].replace(/,/g, ""));
+            if (matches(v)) frag.appendChild(document.createTextNode(m[0]));
+            else {
+              var sp = document.createElement("span");
+              sp.className = "unverified";
+              sp.setAttribute("title", "No tool result matches this number — treat as unverified");
+              sp.textContent = m[0];
+              frag.appendChild(sp);
+            }
+            last = m.index + m[0].length;
+          }
+          if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+          node.parentNode.replaceChild(frag, node);
+        });
+      }
+      aDiv.querySelectorAll(".cite-chip").forEach(function (chip) {
+        chip.addEventListener("click", function () {
+          var rid = chip.getAttribute("data-rid");
+          var existing = aDiv.querySelector('.tool-detail[data-rid="' + rid + '"]');
+          if (existing) { existing.remove(); return; }
+          var rec = null;
+          (ver.results || []).forEach(function (r) { if (r.result && r.result.resultId === rid) rec = r; });
+          var d = document.createElement("div");
+          d.className = "tool-detail";
+          d.setAttribute("data-rid", rid);
+          if (!rec) {
+            d.style.cssText = d.style.cssText + ";color:#b91c1c";
+            d.textContent = "No tool result recorded for " + rid + ".";
+          } else {
+            var h = document.createElement("div");
+            h.style.cssText = "font-weight:600;font-size:.8rem";
+            h.textContent = Core.Verify.toolDescription(rec.tool, rec.args) + " → " + rid;
+            var pre = document.createElement("pre");
+            var raw = JSON.stringify(rec.result, null, 2);
+            pre.textContent = raw.length > 4000 ? raw.slice(0, 4000) + "\n… truncated" : raw;
+            d.appendChild(h);
+            d.appendChild(pre);
+          }
+          aDiv.appendChild(d);
+        });
+      });
+      var footer = document.createElement("div");
+      footer.className = "verify-foot verify-" + (ver.unverified.length ? "bad" : "good");
+      footer.textContent = "Verification: " + ver.verified.length + " of " + ver.total + " numbers verified against tool results";
+      if (ver.unverified.length) {
+        var un = document.createElement("div");
+        un.className = "verify-notes";
+        un.textContent = "Unverified: " + ver.unverified.map(function (u) { return u.str; }).join(", ") +
+          (ver.hasEmptyResult ? " — a tool returned no rows; unverified figures are flagged as possible fabrications." : " (no tool result matches these numbers)");
+        footer.appendChild(un);
+      } else if (ver.citations.length) {
+        var cites = document.createElement("div");
+        cites.className = "verify-notes";
+        cites.textContent = "Citations: " + ver.citations.join(", ") + " — click a chip to see the query, filters, and rows behind it.";
+        footer.appendChild(cites);
+      }
+      aDiv.appendChild(footer);
+    }
 
   // Build the tool context the AI can call: datasets (raw rows + mapping), plus chart
   // creation/lookup so create_chart / get_chart_data round-trip through the shared renderer.
@@ -3276,8 +3638,9 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     if (!aiCtx || aiCtx.key !== key) {
       var systemPrompt = cfg.systemPrompt ||
         "You are a senior sales analyst. Use the available tools (list_datasets, describe_schema, query, compare_periods, create_chart, get_chart_data) to compute figures yourself. " +
-        "Never state a number you did not get from a tool result. Cite the resultId for any figure you report. " +
-        "Tools are available; call them as a fenced JSON block {\"tool\":\"...\",\"args\":{...}}.";
+              "Never state a number you did not get from a tool result. Cite the resultId for any figure you report, inline as [r1] after the number (e.g. \"total: 9,537 units [r1]\"). " +
+              "When a query returns no rows, say so explicitly and do not report any figure for it. " +
+              "Tools are available; call them as a fenced JSON block {\"tool\":\"...\",\"args\":{...}}.";
       aiCtx = { key: key, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: Core.buildAiPrompt(stats, store.get("aggMode"), lastLoad ? lastLoad.mapping : null, lastLoad ? lastLoad.rowsArr : null) }] };
     }
     aiCtx.messages.push({ role: "user", content: question ? question : "Provide your analysis of this data using the tools." });
@@ -3317,9 +3680,13 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       });
       var answer = loopRes.content;
       if (loopRes.hitCap) answer += "\n\n> _(Reached the tool-turn limit; ask a narrower question.)_";
-      aiCtx.messages.push({ role: "assistant", content: answer });
-      pending.remove();
-      addAiEntry(question, answer + (toolLog.length ? "\n\n**Tools used:**\n" + toolLog.join("\n") : ""), false);
+            // Phase 7: claim-check the raw answer against this turn's tool results BEFORE rendering,
+            // then turn [rN] citations into clickable chips.
+            var ver = Core.Verify.checkClaims(answer, loopRes.results);
+            answer = Core.Verify.renderCitations(answer);
+            aiCtx.messages.push({ role: "assistant", content: loopRes.content });
+            pending.remove();
+            addAiEntry(question, answer, false, { verification: ver, toolLog: toolLog });
     } catch (e) {
       pending.remove();
       addAiEntry(question, Core.buildStatisticalFallback(stats) + "\n\n[AI request failed after " + Math.floor((Date.now() - t0) / 1000) + "s: " + e.message + "]", true);
@@ -3337,7 +3704,24 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   }
 
   // ---- Wiring (all events via addEventListener; no inline handler strings) ----
-  window.App = {
+      // Phase 7: "Show the math" toggles + "View contributing rows" — one delegated click handler on
+      // document (works for static and dynamically created buttons). Panels are pre-filled by
+      // renderKpis; if one is ever empty (e.g. after a re-render), it is refilled on open.
+      var KPI_DEF_IDS = { total: "totalUnits", top: "topProduct", bottom: "bottomProduct", trend: "trend", season: "seasonality" };
+      document.addEventListener("click", function (e) {
+        var t = e.target;
+        if (!t || !t.classList || !t.classList.contains("math-btn")) return;
+        if (t.hasAttribute("data-math")) {
+          var kpiId = t.getAttribute("data-math");
+          var box = document.querySelector("#kpiMath" + kpiId);
+          if (!box) return;
+          if (!box.getAttribute("data-filled")) fillKpiMath(kpiId, KPI_DEF_IDS[kpiId] || null, filteredRows(), []);
+          box.classList.toggle("open");
+        } else if (t.hasAttribute("data-rows")) {
+          showRowsModal(filteredRows(), "Contributing rows — " + t.getAttribute("data-rows").toUpperCase());
+        }
+      });
+    window.App = {
     onFilterChange: onFilterChange,
     handleFile: handleFile,
     exportCsv: exportCsv,

@@ -19,6 +19,47 @@ const lines = csvText.split(/\r?\n/);
 const header = lines[0].split(",");
 const dataRows = lines.slice(1).map(l => l.split(","));
 
+// ---------------------------------------------------------------------------
+// Phase 7: verification layer — fabricated numbers flagged, verified answers
+// fully verified, resultIds on every tool result, definition registry.
+// ---------------------------------------------------------------------------
+const ex = Core.Verify.extractNumbers("total: 9,537.5 units [r1]; down 12% from 2017; 0.25");
+if (ex.length !== 4 || ex[0].num !== 9537.5 || ex[1].num !== 12 || ex[2].num !== 2017 || ex[3].num !== 0.25) { console.error("FAIL 7.1: extractNumbers", JSON.stringify(ex)); process.exit(1); }
+console.log("phase 7.1 extractNumbers: ok");
+
+const vRes = [
+  { tool: "query", args: { dimensions: ["month"] }, result: { resultId: "r1", rows: [{ month: "2017-03", units: 320 }], count: 1 } },
+  { tool: "compare_periods", args: {}, result: { resultId: "r2", current: 320, prior: 300, deltaAbs: 20, deltaPct: 0.0667 } }
+];
+const vc = Core.Verify.checkClaims("March total was 320 units [r1], up 20 from 300 [r2]. We invented 9999.", vRes);
+if (vc.total !== 4 || vc.verified.length !== 3 || vc.unverified.length !== 1 || vc.unverified[0].str !== "9999") { console.error("FAIL 7.2: checkClaims verified/unverified", JSON.stringify(vc)); process.exit(1); }
+if (vc.citations.join(",") !== "r1,r2") { console.error("FAIL 7.2: citations", JSON.stringify(vc.citations)); process.exit(1); }
+console.log("phase 7.2 checkClaims fully-verified + fabrication: ok");
+
+const emptyRes = [{ tool: "query", args: {}, result: { resultId: "r1", rows: [], count: 0 } }];
+const vc2 = Core.Verify.checkClaims("No rows existed, but I report 888 units.", emptyRes);
+if (!vc2.hasEmptyResult || vc2.unverified.some(u => u.str !== "888")) { console.error("FAIL 7.3: empty-result fabrication flag", JSON.stringify(vc2)); process.exit(1); }
+console.log("phase 7.3 empty-result honesty: ok");
+
+const chips = Core.Verify.renderCitations("total 320 [r1], prior 300 [r2]");
+if (!chips.includes('class="cite-chip"') || !chips.includes('data-rid="r1"') || !chips.includes(">r1<")) { console.error("FAIL 7.4: renderCitations", chips); process.exit(1); }
+console.log("phase 7.4 renderCitations: ok");
+
+// Every tool result carries a resultId (the model can cite any of them).
+const ctxAll = { datasets: [{ id: "d1", name: "t", hasData: true, mapping: [{ name: "m", type: "text", role: "dimension", concept: "product", idx: 0 }], rowsArr: [] }] };
+const t1 = Core.Tools.runTool("list_datasets", {}, ctxAll);
+const t2 = Core.Tools.runTool("describe_schema", { datasetId: "d1" }, ctxAll);
+const t3 = Core.Tools.runTool("query", { dimensions: ["m"], measures: [] , limit: 10}, ctxAll);
+const t4 = Core.Tools.runTool("extract_text_insights", { field: "m" }, ctxAll);
+if (!t1.resultId || !t2.resultId || !t3.resultId || !t4.resultId) { console.error("FAIL 7.5: resultId on every tool result", JSON.stringify({ t1, t2, t3, t4 })); process.exit(1); }
+console.log("phase 7.5 resultId on every tool: ok");
+
+const d1 = Core.Verify.getDefinition("totalUnits");
+const d2 = Core.Verify.getDefinition("winRate");
+if (!d1 || !/sum/i.test(d1.definition) || !d2 || !/won/.test(d2.definition)) { console.error("FAIL 7.6: definition registry", JSON.stringify({ d1, d2 })); process.exit(1); }
+console.log("phase 7.6 definition registry: ok");
+// ---------------------------------------------------------------------------
+
 // 1. Parse + validate
 const parsed = Core.parseCsvData(header, dataRows);
 console.log("rows:", parsed.rows.length, "errors:", JSON.stringify(parsed.errors));
