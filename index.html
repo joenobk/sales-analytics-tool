@@ -206,6 +206,10 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   .conf-low { color: #d97706; } .conf-med { color: #b45309; }
     .filter-count { margin-left: auto; font-size: .68rem; opacity: .7; }
   .sidebar-collapsed main { margin-left: 0; }
+  /* Phase 10: QBR report builder */
+  .qbr-section.dragging { opacity: .5; }
+  .qbr-note { display: block; }
+  #qbrOutline { max-height: 260px; overflow-y: auto; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } aside.sidebar { position: static; } }
     .ds-tabs { max-width: 1200px; margin: 14px auto 0; padding: 0 16px; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -221,7 +225,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.14 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.15 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
@@ -301,6 +305,30 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
             <div style="display:flex;gap:4px"><input type="text" id="viewName" placeholder="View name (e.g. Q3 DE review)" style="flex:1;min-width:0"><button type="button" id="saveViewBtn">Save</button></div>
             <div id="savedViewsList" class="checklist"><span class="muted">Save the current filters + charts to reproduce a view later.</span></div>
             <div style="display:flex;gap:4px"><button type="button" id="exportViewsBtn">Export JSON</button><button type="button" id="importViewsBtn">Import JSON</button><input type="file" id="viewsImportInput" accept=".json,application/json" hidden></div>
+          </div>
+        </div>
+
+        <div class="filter-group" id="qbrCard">
+          <h3>Report (QBR)</h3>
+          <div style="display:flex;flex-direction:column;gap:6px;font-size:.82rem">
+            <div style="display:flex;gap:4px;align-items:center">
+              <input type="number" id="qbrYear" min="2000" max="2100" value="2026" style="width:64px" title="Quarter year">
+              <select id="qbrQuarter" title="Quarter (or full year)">
+                <option value="1">Q1</option><option value="2" selected>Q2</option><option value="3">Q3</option><option value="4">Q4</option><option value="">Full year</option>
+              </select>
+              <button type="button" id="qbrDraftBtn">Auto-draft</button>
+            </div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">
+              <button type="button" id="qbrPinKpi">+ KPI</button>
+              <button type="button" id="qbrPinChart">+ Chart</button>
+              <button type="button" id="qbrPinTheme">+ Theme</button>
+              <button type="button" id="qbrPinText">+ Text</button>
+              <button type="button" id="qbrFreeText">+ Section</button>
+            </div>
+            <div id="qbrOutline" class="checklist"><span class="muted">Pin KPIs, charts, themes, or notes; or Auto-draft a quarter.</span></div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">
+              <button type="button" id="qbrExportBtn">Export report</button>
+            </div>
           </div>
         </div>
       </aside>
@@ -2494,6 +2522,267 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         };
       };
 
+      // ---- Phase 10: QBR report builder ----
+      // Pure, DOM-free report logic: quarterly auto-draft with cited figures, outline persistence,
+      // and figure-list export (CSV appendix). UI lives in the app layer.
+      var ReportBuilder = {};
+      var QBR_LS_KEY = "salesQbrOutline";
+
+      // "2026-Q2" | {year,q} | "2026" (full year) -> {year, q|null} or null.
+      function parseQuarter(input) {
+        if (!input) return null;
+        if (typeof input === "object") {
+          var yr = parseInt(input.year, 10);
+          var q = input.q != null ? parseInt(input.q, 10) : null;
+          if (!yr || (q != null && (q < 1 || q > 4))) return null;
+          return { year: yr, q: q };
+        }
+        var s = String(input).trim();
+        var m = /^(\d{4})\s*[-/]?\s*Q?([1-4])$/i.exec(s);
+        if (m) return { year: parseInt(m[1], 10), q: parseInt(m[2], 10) };
+        var y = /^(\d{4})$/.exec(s);
+        if (y) return { year: parseInt(y[1], 10), q: null };
+        return null;
+      }
+      ReportBuilder.parseQuarter = parseQuarter;
+
+      // Quarter bounds: inclusive fromMs/toMs.
+      function quarterBounds(year, q) {
+        if (q == null) return { fromMs: new Date(year, 0, 1).getTime(), toMs: new Date(year, 11, 31, 23, 59, 59, 999).getTime() };
+        var from = new Date(year, (q - 1) * 3, 1);
+        var to = new Date(year, q * 3, 0, 23, 59, 59, 999);
+        return { fromMs: from.getTime(), toMs: to.getTime() };
+      }
+      ReportBuilder.quarterBounds = quarterBounds;
+
+      function loadOutline(storage) {
+        storage = storage || (typeof localStorage !== "undefined" ? localStorage : null);
+        if (!storage) return null;
+        try { return JSON.parse(storage.getItem(QBR_LS_KEY)) || null; } catch (e) { return null; }
+      }
+      ReportBuilder.loadOutline = loadOutline;
+
+      function saveOutline(outline, storage) {
+        storage = storage || (typeof localStorage !== "undefined" ? localStorage : null);
+        if (!storage) return;
+        try { storage.setItem(QBR_LS_KEY, JSON.stringify(outline)); } catch (e) {}
+      }
+      ReportBuilder.saveOutline = saveOutline;
+
+      // Format a number (compact for thousands).
+      function fmt(n) {
+        if (n == null || !isFinite(n)) return "–";
+        if (Math.abs(n) >= 1000000) return (n / 1000000).toFixed(1) + "M";
+        if (Math.abs(n) >= 10000) return (n / 1000).toFixed(1) + "K";
+        if (Math.abs(n) >= 1000) return n.toLocaleString();
+        if (Math.abs(n) < 1 && n !== 0) return n.toFixed(3);
+        return String(Math.round(n * 100) / 100);
+      }
+      ReportBuilder.fmt = fmt;
+
+      function pct(x) {
+        if (x == null || !isFinite(x)) return "–";
+        return (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
+      }
+      ReportBuilder.pct = pct;
+
+      // --- Auto-draft: build the QBR sections for a quarter, with cited figures ---
+      // opts: { stats, mapping, rowsArr, recName, recKind, provenance, textInsights, quarter, savedCharts }
+      // Returns { sections:[{id,type,title,body,figures,provenance,action?}], figures:[{id,section,label,value,period,source}] }
+      // Citations are sequential r1..rn and every number in a body references its figure id inline.
+      function buildAutoDraft(opts) {
+        opts = opts || {};
+        var stats = opts.stats || {};
+        var mapping = opts.mapping || [];
+        var rowsArr = opts.rowsArr || [];
+        var recName = opts.recName || "dataset";
+        var recKind = opts.recKind || "generic";
+        var prov = opts.provenance || ("Source: " + recName);
+        var ti = opts.textInsights || null;
+        var q = parseQuarter(opts.quarter) || { year: new Date().getFullYear(), q: null };
+        var bounds = quarterBounds(q.year, q.q);
+        var figures = [];
+        var figSeq = 0;
+        function addFigure(section, label, value, period, source) {
+          figSeq++;
+          var f = { id: "r" + figSeq, section: section, label: label, value: value, period: period, source: source };
+          figures.push(f);
+          return f;
+        }
+        var sections = [];
+
+        var cur = null, pri = null, yr = null;
+        try {
+          var cmp = Metrics.comparePeriods(rowsArr, mapping, { field: "amount", agg: "sum" }, { fromMs: bounds.fromMs, toMs: bounds.toMs });
+          cur = cmp.current; pri = cmp.prior; yr = cmp.yearAgo;
+        } catch (e) {}
+
+        // 1. Headline metrics: QoQ + YoY.
+        var headlineFigs = [];
+        if (cur && cur.value != null) {
+          var fCur = addFigure("headline", "Total " + (q.q ? "Q" + q.q + " " + q.year : q.year), cur.value, q.q ? "Q" + q.q + " " + q.year : String(q.year), "compare_periods");
+          headlineFigs.push(fCur);
+          if (cmp.deltaPct != null && pri && pri.value != null) headlineFigs.push(addFigure("headline", "QoQ delta", cmp.deltaPct, "QoQ", "compare_periods"));
+          if (cmp.priorDeltaPct != null && yr && yr.value != null) headlineFigs.push(addFigure("headline", "YoY delta", cmp.priorDeltaPct, "YoY", "compare_periods"));
+        }
+        sections.push({
+          id: "s-headline", type: "insight", title: "Headline metrics",
+          body: headlineFigs.length
+            ? "Current period total: " + fmt(cur.value) + " [" + headlineFigs[0].id + "]"
+              + (headlineFigs[1] ? " · QoQ " + pct(headlineFigs[1].value) + " [" + headlineFigs[1].id + "]" : "")
+              + (headlineFigs[2] ? " · YoY " + pct(headlineFigs[2].value) + " [" + headlineFigs[2].id + "]" : "") + "."
+            : "No amount column mapped to a time range — cannot compute headline totals.",
+          figures: headlineFigs.map(function (f) { return f.id; }),
+          provenance: prov
+        });
+
+        // 2. Drivers: top/bottom product contribution changes (current vs prior quarter).
+        var driverFigs = [];
+        if (rowsArr.length && coreColumn(mapping, "product") >= 0 && cur && cur.value != null) {
+          var pI = coreColumn(mapping, "product");
+          var priorBounds = q.q != null ? quarterBounds(q.year, q.q - 1 === 0 ? 4 : q.q - 1) : null;
+          // For full-year drafts the "prior" period is the previous year.
+          if (q.q == null) priorBounds = q.year ? quarterBounds(q.year - 1, null) : null;
+          function prodTot(rows, from, to) {
+            var acc = {};
+            rows.forEach(function (r) {
+              var t = coreTime(r, mapping);
+              if (t == null) return;
+              if (from != null && t.getTime() < from) return;
+              if (to != null && t.getTime() > to) return;
+              var p = String(r[pI] == null ? "" : r[pI]);
+              var amt = toNum(coreAmount(r, mapping));
+              if (p && amt != null) acc[p] = (acc[p] || 0) + amt;
+            });
+            return acc;
+          }
+          var curP = prodTot(rowsArr, bounds.fromMs, bounds.toMs);
+          var priP = priorBounds ? prodTot(rowsArr, priorBounds.fromMs, priorBounds.toMs) : {};
+          var moves = Object.keys(curP).map(function (p) {
+            var c = curP[p] || 0, pr = priP[p] || 0;
+            return { p: p, abs: c - pr, cur: c, prior: pr, pct: pr ? (c - pr) / Math.abs(pr) : null };
+          }).sort(function (a, b) { return Math.abs(b.abs) - Math.abs(a.abs); }).slice(0, 3);
+          var moveIndex = {};
+          moves.forEach(function (m) { moveIndex[m.p] = addFigure("drivers", m.p + " QoQ delta", m.abs, "QoQ", "aggregation"); });
+          sections.push({
+            id: "s-drivers", type: "insight", title: "What drove the change",
+            body: moves.length
+              ? moves.map(function (m) { return "- " + m.p + ": " + (m.abs >= 0 ? "+" : "") + fmt(m.abs) + " (" + (m.pct != null ? pct(m.pct) : "new") + ") [" + moveIndex[m.p].id + "]"; }).join("\n")
+              : "No product-level contributions computable for this quarter.",
+            figures: moves.map(function (m) { return moveIndex[m.p].id; }),
+            provenance: prov
+          });
+        } else {
+          sections.push({ id: "s-drivers", type: "insight", title: "What drove the change", body: "No product dimension available.", figures: [], provenance: prov });
+        }
+
+        // 3. Pipeline / campaign health via metric packs.
+        var packKinds = { opportunities: "opportunities", campaigns: "campaigns", activities: "activities" };
+        var pkId = packKinds[recKind] || "transactions";
+        var packDefs = Metrics.metricPacks(pkId);
+        var packFigs = [];
+        var packLines = packDefs.map(function (def) {
+          var r = Metrics.computeMetric(def, rowsArr, mapping, { datasetId: opts.datasetId || null });
+          if (!r.available || r.value == null) return "- " + def.label + ": n/a (" + (r.reason || "no prior period") + ")";
+          var fig = addFigure("" + pkId, def.label, r.value, q.q ? "Q" + q.q : String(q.year), "metric_pack:" + pkId + "." + def.id);
+          packFigs.push(fig);
+          return "- " + def.label + ": " + r.formatted + " [" + fig.id + "]";
+        });
+        sections.push({
+          id: "s-pack", type: "insight", title: (pkId === "transactions" ? "Pipeline health" : pkId.charAt(0).toUpperCase() + pkId.slice(1) + " health"),
+          body: packLines.length ? packLines.join("\n") : "No metric pack for this dataset kind (" + recKind + ").",
+          figures: packFigs.map(function (f) { return f.id; }),
+          provenance: prov
+        });
+
+        // 4. Customer voice: sentiment trend + top themes with verbatim evidence.
+        var voiceFigs = [];
+        var voiceLines = [];
+        if (ti && ti.locked && ti.classified && ti.themeIdx != null) {
+          var ts = TextAnalytics.themeStats(rowsArr, ti.themeIdx, ti.escalationIdx, ti.confidenceIdx);
+          var topThemes = ts.themes.filter(function (t) { return t.name !== "(unclassified)"; }).slice(0, 3);
+          topThemes.forEach(function (t) {
+            var fig = addFigure("voice", t.name + " count", t.count, "QBR", "text_analytics");
+            voiceFigs.push(fig);
+            var evidence = "";
+            (rowsArr || []).forEach(function (r) {
+              if (evidence) return;
+              var th = String(r[ti.themeIdx] == null ? "" : r[ti.themeIdx]);
+              if (th === t.name && ti.colIdx < r.length) evidence = String(r[ti.colIdx] == null ? "" : r[ti.colIdx]).slice(0, 120);
+            });
+            voiceLines.push("- " + t.name + " (" + t.count + ") [" + fig.id + "]" + (evidence ? " — \u201C" + evidence + "\u201D" : ""));
+          });
+          var escFig = addFigure("voice", "Escalations", ts.escalationCount, "QBR", "text_analytics");
+          voiceFigs.push(escFig);
+          voiceLines.push("- Escalations: " + ts.escalationCount + " [" + escFig.id + "]");
+        } else {
+          voiceLines.push("Text insights are not run for this dataset yet — run propose → lock → classify in Text insights.");
+        }
+        sections.push({
+          id: "s-voice", type: "insight", title: "Customer voice",
+          body: voiceLines.join("\n"), figures: voiceFigs.map(function (f) { return f.id; }), provenance: prov
+        });
+
+        // 5. Risks: anomalies + concentration.
+        var riskFigs = [];
+        var riskLines = [];
+        try {
+          var anos = Severity.anomalies(stats.series || [], 12).slice(0, 3);
+          anos.forEach(function (a) {
+            var f = addFigure("risks", "Anomaly " + (typeof a.label === "number" ? new Date(a.label).toISOString().slice(0, 10) : a.label), a.value, "QBR", "anomaly");
+            riskFigs.push(f);
+            riskLines.push("- Anomaly " + (typeof a.label === "number" ? new Date(a.label).toISOString().slice(0, 10) : a.label) + ": " + fmt(a.value) + " (z=" + a.z.toFixed(2) + ") [" + f.id + "]");
+          });
+        } catch (e) {}
+        var topShare = stats.topProducts && stats.topProducts.length && stats.total ? stats.topProducts[0][1] / stats.total : null;
+        if (topShare != null) {
+          var fr = addFigure("risks", "Top product share", topShare, "QBR", "concentration");
+          riskFigs.push(fr);
+          riskLines.push("- Top product concentration: " + (topShare * 100).toFixed(0) + "% [" + fr.id + "]");
+        }
+        if (!riskLines.length) riskLines.push("No risks detected in the filtered view.");
+        sections.push({
+          id: "s-risks", type: "insight", title: "Risks, concentration, and anomalies",
+          body: riskLines.join("\n"), figures: riskFigs.map(function (f) { return f.id; }), provenance: prov
+        });
+
+        // 6. Recommended actions — each tied to a motivating figure.
+        var actions = [];
+        var motiveFig = figures.find(function (f) { return f.section === "risks" && /Anomaly/.test(f.label); });
+        if (motiveFig) actions.push({ action: "Investigate the " + motiveFig.label + " anomaly before it recurs.", motivatedBy: motiveFig.id });
+        var topShareFig = figures.find(function (f) { return f.section === "risks" && /concentration/.test(f.label); });
+        if (topShareFig) actions.push({ action: "Review concentration on the top product; consider diversifying.", motivatedBy: topShareFig.id });
+        var voiceFig = figures.find(function (f) { return f.section === "voice" && /count/.test(f.label); });
+        if (voiceFig) actions.push({ action: "Follow up on the top customer voice theme with the team.", motivatedBy: voiceFig.id });
+        var headFig = figures.find(function (f) { return f.section === "headline" && /Total/.test(f.label); });
+        if (headFig) actions.push({ action: "Review quarter-over-quarter performance drivers from headline.", motivatedBy: headFig.id });
+        sections.push({
+          id: "s-actions", type: "insight", title: "Recommended actions",
+          body: actions.map(function (a) { return "- [x] " + a.action + " (motivated by " + a.motivatedBy + ")" + " [" + a.motivatedBy + "]"; }).join("\n") || "No actions to recommend yet.",
+          figures: actions.map(function (a) { return a.motivatedBy; }), provenance: prov
+        });
+
+        return { sections: sections, figures: figures };
+      }
+      ReportBuilder.buildAutoDraft = buildAutoDraft;
+
+      // Helpers used above (kept local to the module):
+      function coreColumn(mapping, concept) {
+        for (var i = 0; i < mapping.length; i++) if (mapping[i].concept === concept || mapping[i].role === concept) return mapping[i].idx != null ? mapping[i].idx : i;
+        return -1;
+      }
+      function coreTime(r, mapping) {
+        var tI = coreColumn(mapping, "time");
+        if (tI < 0 || r[tI] == null) return null;
+        var tc = null;
+        for (var i = 0; i < mapping.length; i++) if (mapping[i].role === "time" && mapping[i].format) tc = mapping[i].format;
+        try { return Metrics.parseTime(r[tI], tc); } catch (e) { return null; }
+      }
+      function coreAmount(r, mapping) {
+        var mI = coreColumn(mapping, "amount");
+        return mI >= 0 ? toNum(r[mI]) : null;
+      }
+
   // Deterministic opening profile for a dataset (rendered immediately, never blocks on the model).
   // `rows` are the normalized object rows from the app's filtered view ({date, articleId, countryCode, units}).
   function openProfile(rows, mapping, aggMode) {
@@ -2642,7 +2931,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   AI.filterKey = filterKey;
 
   // ---- Export all modules + legacy aliases on the core namespace ----
-  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools, Verify: Verify, TextAnalytics: TextAnalytics, Severity: Severity };
+  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools, Verify: Verify, TextAnalytics: TextAnalytics, Severity: Severity, ReportBuilder: ReportBuilder };
   // Legacy top-level aliases (backward compat with existing tests)
   api.normalizeHeader = normalizeHeader;
   api.parseDateValue = parseDateValue;
@@ -4269,7 +4558,8 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     function renderAll() {
       var rows = filteredRows();
       var stats = Core.computeStats(rows, store.get("aggMode"));
-      renderKpis(stats, rows);
+          window.__lastStats = stats; // Phase 10: KPI pins export the current values
+          renderKpis(stats, rows);
       renderChart(stats.series);
       renderCountries(stats.byCountry);
       renderChartList(); // Phase 5: saved spec-driven charts re-render against the current filters
@@ -4739,6 +5029,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
             aiCtx.messages.push({ role: "assistant", content: loopRes.content });
             pending.remove();
             addAiEntry(question, answer, false, { verification: ver, toolLog: toolLog });
+            window.__lastInsight = loopRes.content || ""; // Phase 10: insight pin exports the last answer
     } catch (e) {
       pending.remove();
       addAiEntry(question, Core.buildStatisticalFallback(stats) + "\n\n[AI request failed after " + Math.floor((Date.now() - t0) / 1000) + "s: " + e.message + "]", true);
@@ -4777,6 +5068,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     onFilterChange: onFilterChange,
     handleFile: handleFile,
     exportCsv: exportCsv,
+        currentViewSnapshot: function () { try { return currentViewSnapshot(); } catch (e) { return {}; } },
     resetFilters: function () {
       document.querySelectorAll("#productList input").forEach(function (i) { i.checked = true; });
       document.querySelectorAll("#countryChecklist input").forEach(function (i) { i.checked = true; });
@@ -4955,6 +5247,218 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
             this.value = "";
           });
           renderSavedViews();
+
+                // ---- Phase 10: QBR report builder ----
+                // Outline: [{id,type:'kpi'|'chart'|'theme'|'insight'|'text',title,source,note,pinnedAt}]
+                var qbrOutline = Core.ReportBuilder.loadOutline() || [];
+                var qbrFigures = [];
+                // Phase 10: reload restores the outline AFTER the DOM is ready (init block runs early).
+                (function () {
+                  var stored = Core.ReportBuilder.loadOutline();
+                  if (stored && stored.sections) { qbrOutline = stored.sections; qbrFigures = stored.figures || []; }
+                  document.addEventListener("DOMContentLoaded", function () { renderQbr(); });
+                })();
+
+                // Keep the last stats + last AI insight so KPI/insight pins have data.
+                window.__lastStats = window.__lastStats || null;
+                window.__lastInsight = window.__lastInsight || null;
+
+                function currentQuarter() {
+                  var y = parseInt(document.getElementById("qbrYear").value, 10) || new Date().getFullYear();
+                  var q = document.getElementById("qbrQuarter").value;
+                  return q ? { year: y, q: parseInt(q, 10) } : { year: y, q: null };
+                }
+                function provLine() {
+                  var rec = currentChartDataset();
+                  return provFor(rec, filteredRows(), null) || ("Source: " + (rec ? rec.name : "no dataset"));
+                }
+                function qbrSave() {
+                  Core.ReportBuilder.saveOutline({ name: "QBR " + currentQuarter().year + (currentQuarter().q ? "-Q" + currentQuarter().q : ""), quarter: currentQuarter(), sections: qbrOutline, figures: qbrFigures });
+                  renderQbr();
+                }
+                function renderQbr() {
+                  var el = document.getElementById("qbrOutline");
+                  if (!el) return;
+                  el.textContent = "";
+                  if (!qbrOutline.length) { var m = document.createElement("span"); m.className = "muted"; m.textContent = "No sections yet — pin items or Auto-draft."; el.appendChild(m); return; }
+                  qbrOutline.forEach(function (sec, i) {
+                    var row = document.createElement("div");
+                    row.className = "qbr-section";
+                    row.draggable = true;
+                    row.dataset.idx = i;
+                    row.style.cssText = "border:1px solid var(--border);border-radius:6px;padding:6px 8px;margin:4px 0;font-size:.78rem";
+                    var head = document.createElement("div");
+                    head.style.cssText = "display:flex;gap:6px;align-items:center";
+                    var grip = document.createElement("span");
+                    grip.textContent = "⠿"; grip.style.cssText = "cursor:grab;color:var(--muted)";
+                    var title = document.createElement("span");
+                    title.style.cssText = "font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis";
+                    title.textContent = sec.title;
+                    var del = document.createElement("button");
+                    del.type = "button"; del.textContent = "✕"; del.style.cssText = "font-size:.68rem";
+                    del.addEventListener("click", function () { qbrOutline.splice(i, 1); qbrSave(); });
+                    head.appendChild(grip); head.appendChild(title); head.appendChild(del);
+                    row.appendChild(head);
+                    var prov = document.createElement("div");
+                    prov.className = "prov";
+                    prov.textContent = sec.provenance || "";
+                    row.appendChild(prov);
+                    // Optional speaker notes (collapsible textarea).
+                    var noteBtn = document.createElement("button");
+                    noteBtn.type = "button"; noteBtn.textContent = sec.note != null ? "Notes ✓" : "Notes";
+                    noteBtn.style.cssText = "font-size:.68rem;margin-top:2px";
+                    noteBtn.addEventListener("click", function () {
+                      var ta = row.querySelector(".qbr-note");
+                      if (ta) { ta.style.display = ta.style.display === "none" ? "block" : "none"; return; }
+                      var ta2 = document.createElement("textarea");
+                      ta2.className = "qbr-note";
+                      ta2.placeholder = "Speaker notes…";
+                      ta2.style.cssText = "width:100%;min-height:36px;font-size:.75rem;margin-top:4px";
+                      ta2.value = sec.note || "";
+                      ta2.addEventListener("input", function () { sec.note = this.value; Core.ReportBuilder.saveOutline({ name: "QBR", quarter: currentQuarter(), sections: qbrOutline, figures: qbrFigures }); });
+                      row.appendChild(ta2);
+                    });
+                    head.appendChild(noteBtn);
+                    // Drag reorder: HTML5 native.
+                    row.addEventListener("dragstart", function (e) { e.dataTransfer.setData("text/plain", String(i)); e.dataTransfer.effectAllowed = "move"; row.dataset.dragFrom = String(i); row.style.opacity = "0.5"; });
+                    row.addEventListener("dragend", function () { row.style.opacity = "1"; delete row.dataset.dragFrom; });
+                    row.addEventListener("dragover", function (e) { e.preventDefault(); });
+                    row.addEventListener("drop", function (e) {
+                      e.preventDefault();
+                      var from = parseInt(e.dataTransfer ? e.dataTransfer.getData("text/plain") : "", 10);
+                      if (isNaN(from)) {
+                        var srcRow = el.querySelector("[data-drag-from]");
+                        if (srcRow && srcRow.dataset.dragFrom != null) from = parseInt(srcRow.dataset.dragFrom, 10);
+                      }
+                      if (isNaN(from) || from === i) return;
+                      var item = qbrOutline.splice(from, 1)[0];
+                      qbrOutline.splice(i, 0, item);
+                      qbrSave();
+                    });
+                    el.appendChild(row);
+                  });
+                }
+                function qbrRenderBody(sec) {
+                  // Returns an HTML string for a section body (sanitized by the renderer). Charts embed as <img>.
+                  if (sec.type === "kpi") {
+                    var st = window.__lastStats;
+                    var val = "";
+                    if (st) {
+                      if (sec.source === "total") val = st.total != null ? st.total.toLocaleString() : "";
+                      else if (sec.source === "top" && st.topProducts && st.topProducts[0]) val = displayId(st.topProducts[0][0]) + " (" + st.topProducts[0][1].toLocaleString() + ")";
+                      else if (sec.source === "bottom" && st.bottomProduct) val = displayId(st.bottomProduct[0]) + " (" + st.bottomProduct[1].toLocaleString() + ")";
+                      else if (sec.source === "trend") val = (st.trendPctOfMean != null ? (st.trendPctOfMean * 100).toFixed(1) + "% of mean" : "");
+                      else if (sec.source === "season" && st.seasonPeak) val = st.seasonPeak.name + " peak (+" + (st.seasonPeak.deviationPct * 100).toFixed(0) + "%)";
+                    }
+                    return "<b>" + esc(val || "–") + "</b>";
+                  }
+                  if (sec.type === "chart") {
+                    // Find the saved chart and render its current series into a data-URL image.
+                    var sc = (savedCharts || []).find(function (c) { return c.id === sec.source; });
+                    if (!sc) return "<span class='muted'>Chart no longer exists.</span>";
+                    var rec = currentChartDataset();
+                    if (!rec) return "<span class='muted'>No dataset.</span>";
+                    try {
+                      var canvas = document.createElement("canvas");
+                      canvas.width = 560; canvas.height = 220;
+                      drawSavedChart(canvas, rec, sc.spec);
+                      return '<img src="' + canvas.toDataURL("image/png") + '" style="max-width:100%;border-radius:6px" alt="' + esc(sc.spec.title || "chart") + '"/>';
+                    } catch (e) { return "<span class='muted'>Chart render failed: " + esc(e.message) + "</span>"; }
+                  }
+                  if (sec.type === "theme") {
+                    var rec2 = currentChartDataset();
+                    if (!rec2 || !rec2.textInsights || rec2.textInsights.themeIdx == null) return "<span class='muted'>No theme data.</span>";
+                    var tI = rec2.textInsights.themeIdx;
+                    var cI = rec2.textInsights.colIdx;
+                    var count = 0, evidence = "";
+                    (rec2.rowsArr || []).forEach(function (r) {
+                      if (String(r[tI]) === sec.source) { count++; if (!evidence && cI < r.length) evidence = String(r[cI] == null ? "" : r[cI]).slice(0, 140); }
+                    });
+                    return esc(sec.source) + " (" + count + ")" + (evidence ? " — \u201C" + esc(evidence) + "\u201D" : "");
+                  }
+                  if (sec.type === "text") return esc(sec.source || "");
+                  // insight: body with citations rendered.
+                  return Core.Verify.renderCitations(esc(sec.body || sec.source || ""));
+                }
+                // Auto-draft: replace the outline with generated sections + figures.
+                function qbrAutoDraft() {
+                  var rec = currentChartDataset();
+                  if (!rec || !rec.rowsArr || !rec.mapping) { showError("Load a dataset before drafting a QBR."); return; }
+                  var stats = window.__lastStats || Core.computeStats(filteredRows(), store.get("aggMode"));
+                  var draft = Core.ReportBuilder.buildAutoDraft({
+                    stats: stats, mapping: rec.mapping, rowsArr: rec.rowsArr, recName: rec.name, recKind: rec.kind,
+                    provenance: provLine(), textInsights: rec.textInsights || null, quarter: currentQuarter(), savedCharts: savedCharts
+                  });
+                  qbrOutline = draft.sections.map(function (s) {
+                    return { id: s.id, type: "insight", title: s.title, body: s.body, provenance: s.provenance, figures: s.figures, pinnedAt: Date.now() };
+                  });
+                  qbrFigures = draft.figures;
+                  qbrSave();
+                }
+                function qbrPin(kind, source, title) {
+                  qbrOutline.push({ id: "p" + Date.now().toString(36), type: kind, source: source, title: title, provenance: provLine(), pinnedAt: Date.now() });
+                  qbrSave();
+                }
+                document.getElementById("qbrDraftBtn").addEventListener("click", qbrAutoDraft);
+                document.getElementById("qbrPinKpi").addEventListener("click", function () {
+                  var v = prompt("KPI to pin:", "total");
+                  if (v && ["total", "top", "bottom", "trend", "season"].indexOf(v) !== -1) qbrPin("kpi", v, "KPI: " + v);
+                });
+                document.getElementById("qbrPinChart").addEventListener("click", function () {
+                  if (!savedCharts.length) { showError("No saved charts yet — add one in Spec-driven charts."); return; }
+                  var names = savedCharts.map(function (c, i) { return (i + 1) + ". " + (c.spec.title || c.spec.type); }).join("\n");
+                  var pick = prompt("Chart to pin:\n" + names, "1");
+                  var idx = parseInt(pick, 10) - 1;
+                  if (!isNaN(idx) && savedCharts[idx]) qbrPin("chart", savedCharts[idx].id, "Chart: " + (savedCharts[idx].spec.title || savedCharts[idx].spec.type));
+                });
+                document.getElementById("qbrPinTheme").addEventListener("click", function () {
+                  var rec = currentChartDataset();
+                  if (!rec || !rec.textInsights || rec.textInsights.themeIdx == null) { showError("No text-insight themes on this dataset."); return; }
+                  var themes = (store.get("themes") || []).join("\n");
+                  var pick = prompt("Theme to pin:\n" + themes);
+                  if (pick) qbrPin("theme", pick.trim(), "Theme: " + pick.trim());
+                });
+                document.getElementById("qbrPinText").addEventListener("click", function () {
+                  var txt = window.__lastInsight || "";
+                  if (!txt) { showError("Run an analysis first to pin an insight."); return; }
+                  qbrPin("text", txt, "Insight");
+                });
+                document.getElementById("qbrFreeText").addEventListener("click", function () {
+                  var title = prompt("Section title:", "Notes");
+                  if (!title) return;
+                  qbrOutline.push({ id: "p" + Date.now().toString(36), type: "text", source: "", title: title, body: "", provenance: provLine(), pinnedAt: Date.now() });
+                  qbrSave();
+                });
+                // Export: open print-optimized window + CSV appendix + view JSON download.
+                function figuresCsv() {
+                  var lines = ["figure_id,section,label,value,period,source"];
+                  (qbrFigures || []).forEach(function (f) {
+                    lines.push([f.id, f.section, '"' + String(f.label).replace(/"/g, '""') + '"', f.value, f.period, '"' + String(f.source).replace(/"/g, '""') + '"'].join(","));
+                  });
+                  return lines.join("\n");
+                }
+                function qbrExport() {
+                  var w = window.open("", "_blank", "width=1000,height=800");
+                  if (!w) { showError("Pop-up blocked — allow pop-ups to export."); return; }
+                  var title = "QBR " + currentQuarter().year + (currentQuarter().q ? "-Q" + currentQuarter().q : "");
+                  var body = qbrOutline.map(function (sec) {
+                    var inner = qbrRenderBody(sec);
+                    var notes = sec.note ? "<p class='notes'><b>Speaker notes:</b> " + esc(sec.note) + "</p>" : "";
+                    return "<section><h2>" + esc(sec.title || sec.type) + "</h2><div class='body'>" + inner + "</div><p class='prov'>" + esc(sec.provenance || "") + "</p>" + notes + "</section>";
+                  }).join("");
+                  var csv = figuresCsv();
+                  var csvTable = qbrFigures.map(function (f) { return "<tr><td>" + esc(f.id) + "</td><td>" + esc(f.section) + "</td><td>" + esc(f.label) + "</td><td>" + esc(String(f.value)) + "</td><td>" + esc(f.period) + "</td><td>" + esc(f.source) + "</td></tr>"; }).join("");
+                  w.document.write("<!doctype html><html><head><meta charset='utf-8'><title>" + title + "</title><style>" +
+                    "body{font-family:Georgia,serif;max-width:900px;margin:0 auto;padding:20px;color:#222}h1{font-size:1.6em;border-bottom:2px solid #333;padding-bottom:6px}h2{font-size:1.15em;margin-top:20px}.body{white-space:pre-wrap;line-height:1.55}.prov{font-size:.72em;color:#666}.notes{font-size:.85em;color:#444;border-left:3px solid #ccc;padding-left:8px}table{border-collapse:collapse;font-size:.8em}td,th{border:1px solid #ccc;padding:3px 8px;text-align:left}img{max-width:100%}@media print{body{max-width:none}}button.dl{margin:6px 4px 0 0;font-size:.8em}</style></head><body>" +
+                    "<h1>" + title + "</h1>" + body +
+                    "<h2>Figures appendix</h2><table><thead><tr><th>id</th><th>section</th><th>label</th><th>value</th><th>period</th><th>source</th></tr></thead><tbody>" + (csvTable || "<tr><td colspan=6>No figures</td></tr>") + "</tbody></table>" +
+                    "<p style='margin-top:20px'><button class='dl' id='printBtn'>Print / Save as PDF</button> <button class='dl' id='csvBtn'>Download CSV appendix</button> <button class='dl' id='viewBtn'>Download view JSON</button></p>" +
+                    "<script>document.getElementById('printBtn').addEventListener('click',function(){window.print();});document.getElementById('csvBtn').addEventListener('click',function(){var b=new Blob([" + JSON.stringify(JSON.stringify(csv)) + "],{type:'text/csv'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='qbr-figures.csv';a.click();});document.getElementById('viewBtn').addEventListener('click',function(){var snaps;try{snaps=window.opener&&window.opener.App?window.opener.App.currentViewSnapshot?window.opener.App.currentViewSnapshot():null:null}catch(e){}var data=snaps||{};var b=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='qbr-view.json';a.click();});<\/script>" +
+                    "</body></html>");
+                  w.document.close();
+                }
+                document.getElementById("qbrExportBtn").addEventListener("click", qbrExport);
+                renderQbr();
 
     // ---- Light / dark theme (persisted; defaults to the built-in dark theme) ----
     var THEME_LS_KEY = "salesTheme";

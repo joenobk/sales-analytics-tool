@@ -194,6 +194,68 @@ if (SEV.confidenceLabel(300).label !== "high") { console.error("FAIL 9.5: 300 ro
 console.log("phase 9.5 confidence/sample-size: ok");
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Phase 10: QBR report builder — auto-draft with cited figures, quarter parse,
+// deterministic ids, actions tied to figures.
+// ---------------------------------------------------------------------------
+const RB = Core.ReportBuilder;
+// 10.1 Quarter parsing.
+const q2 = RB.parseQuarter("2026-Q2");
+if (!q2 || q2.year !== 2026 || q2.q !== 2) { console.error("FAIL 10.1: parseQuarter('2026-Q2')", JSON.stringify(q2)); process.exit(1); }
+const qy = RB.parseQuarter("2025");
+if (!qy || qy.year !== 2025 || qy.q !== null) { console.error("FAIL 10.1: parseQuarter('2025')", JSON.stringify(qy)); process.exit(1); }
+if (RB.parseQuarter("bogus") !== null || RB.parseQuarter("2026-Q9") !== null) { console.error("FAIL 10.1: invalid quarters must be null"); process.exit(1); }
+const qb = RB.quarterBounds(2026, 2);
+if (new Date(qb.fromMs).getMonth() !== 3 || new Date(qb.toMs).getMonth() !== 5) { console.error("FAIL 10.1: Q2 bounds must be Apr-Jun", JSON.stringify(qb)); process.exit(1); }
+console.log("phase 10.1 parseQuarter + quarterBounds: ok");
+
+// 10.2 Auto-draft on a small transactions fixture.
+const qbrRows = [
+  ["2026-04-05", "P1", "DE", "5"], ["2026-04-12", "P2", "DE", "7"], ["2026-05-01", "P1", "FR", "4"],
+  ["2026-05-20", "P3", "DE", "9"], ["2026-06-10", "P2", "FR", "6"], ["2026-06-28", "P1", "DE", "3"]
+];
+const qbrHeader = ["Date", "Product", "Country", "Amount"];
+const qbrMapping = [
+  { name: "Date", type: "date", role: "time", concept: "time", idx: 0, format: "iso" },
+  { name: "Product", type: "categorical", role: "dimension", concept: "product", idx: 1 },
+  { name: "Country", type: "categorical", role: "geo", concept: "geography", idx: 2 },
+  { name: "Amount", type: "number", role: "measure", concept: "amount", idx: 3 }
+];
+const draft1 = RB.buildAutoDraft({
+  stats: { series: [], total: 34, topProducts: [["P1", 12]], rowCount: 6 },
+  mapping: qbrMapping, rowsArr: qbrRows, recName: "QBR fixture", recKind: "transactions",
+  provenance: "Source: QBR fixture · rows 6", quarter: { year: 2026, q: 2 }
+});
+if (!draft1.sections || draft1.sections.length < 5) { console.error("FAIL 10.2: must produce >=5 sections", draft1.sections && draft1.sections.length); process.exit(1); }
+const hl = draft1.sections.find(s => s.id === "s-headline");
+if (!hl || hl.body.indexOf("34") === -1 || !hl.figures.length) { console.error("FAIL 10.2: headline must cite the Q2 total (34)", JSON.stringify(hl)); process.exit(1); }
+if (!draft1.figures.length || !draft1.figures.every(f => f.id && f.label != null && f.value != null && f.source)) { console.error("FAIL 10.2: figures must carry id/label/value/source", JSON.stringify(draft1.figures.slice(0,2))); process.exit(1); }
+if (!draft1.sections.every(s => s.provenance)) { console.error("FAIL 10.2: every section needs provenance"); process.exit(1); }
+if (!draft1.sections.find(s => s.id === "s-actions")) { console.error("FAIL 10.2: actions section missing"); process.exit(1); }
+console.log("phase 10.2 auto-draft sections + cited headline + provenance: ok");
+
+// 10.3 Determinism: same inputs -> identical figure ids (r1..rn).
+const draft2 = RB.buildAutoDraft({
+  stats: { series: [], total: 34, topProducts: [["P1", 12]], rowCount: 6 },
+  mapping: qbrMapping, rowsArr: qbrRows, recName: "QBR fixture", recKind: "transactions",
+  provenance: "Source: QBR fixture · rows 6", quarter: { year: 2026, q: 2 }
+});
+const ids1 = draft1.figures.map(f => f.id).join(",");
+const ids2 = draft2.figures.map(f => f.id).join(",");
+if (ids1 !== ids2) { console.error("FAIL 10.3: auto-draft must be deterministic", ids1, ids2); process.exit(1); }
+if (draft1.figures.some((f, i) => f.id !== "r" + (i + 1))) { console.error("FAIL 10.3: citations must be sequential r1..rn"); process.exit(1); }
+console.log("phase 10.3 auto-draft determinism + sequential citations: ok");
+
+// 10.4 Every recommended action is tied to an existing figure.
+const acts = draft1.sections.find(s => s.id === "s-actions");
+if (!acts || !acts.body) { console.error("FAIL 10.4: actions body", JSON.stringify(acts)); process.exit(1); }
+const figIds = new Set(draft1.figures.map(f => f.id));
+const cited = acts.body.match(/\[r\d+\]/g) || [];
+if (!cited.length) { console.error("FAIL 10.4: actions must cite figures"); process.exit(1); }
+for (const c of cited) if (!figIds.has(c.slice(1, -1))) { console.error("FAIL 10.4: action citation " + c + " must exist in figures"); process.exit(1); }
+console.log("phase 10.4 actions tied to figures: ok");
+// ---------------------------------------------------------------------------
+
 // 1. Parse + validate
 const parsed = Core.parseCsvData(header, dataRows);
 console.log("rows:", parsed.rows.length, "errors:", JSON.stringify(parsed.errors));
