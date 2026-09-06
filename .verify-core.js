@@ -401,10 +401,10 @@ const badDate = Core.parseCsvData(header, [["99999999","1","AT","5"],["20170817"
 if (badDate.rows.length !== 1 || !/skipped/i.test(badDate.errors[0])) { console.error("FAIL: invalid date handling"); process.exit(1); }
 
 // 9. Phase 0: all named modules present on the namespace (eleven after Phases 2-3)
-for (const modName of ["Schema", "Datasets", "Entities", "Joins", "Store", "Metrics", "Charts", "Insight", "Text", "Report", "AI", "Tools"]) {
+for (const modName of ["Schema", "Datasets", "Entities", "Joins", "Store", "Metrics", "Charts", "Insight", "Text", "Report", "AI", "Tools", "Verify"]) {
   if (!Core[modName] || typeof Core[modName] !== "object") { console.error(`FAIL: module ${modName} missing on SalesCore`); process.exit(1); }
 }
-console.log("modules present:", ["Schema","Datasets","Entities","Joins","Store","Metrics","Charts","Insight","Text","Report","AI","Tools"].join(", "));
+console.log("modules present:", ["Schema","Datasets","Entities","Joins","Store","Metrics","Charts","Insight","Text","Report","AI","Tools","Verify"].join(", "));
 
 // 10. Phase 0: HTML sanitizer strips script/style tags, on* attrs, javascript: URLs
 const dirty = '<script>alert(1)</script><div onclick="x()" style="color:red">ok</div><a href="javascript:void(0)">j</a><style>p{}</style>';
@@ -919,6 +919,90 @@ const objRows = [
 const prof = Core.Tools.openProfile(objRows, m4Map, "month");
 if (prof.total !== 22 || !prof.top || !prof.coverage || !prof.coverage.product || !prof.coverage.geography) { console.error("FAIL: openProfile", JSON.stringify(prof)); process.exit(1); }
 console.log("phase 6.7 openProfile: ok");
+
+// ---- Relational data access (charts + metrics across declared joins) ----
+// A chart/metric may reference a field that lives on another dataset. enrichView follows the
+// declared join graph to build a virtual enriched view of the base dataset.
+
+// Base = transactions (has amount/units). Products = dimension (has product label). A chart on the
+// base that references a product concept absent from the base should enrich from the Products dataset.
+const relBaseFields = ["Date", "Country_Code", "Units", "Item_No"];
+const relBaseRows = [
+  ["2024-01-05", "DE", "10", "P1"],
+  ["2024-01-20", "FR", "5", "P1"],
+  ["2024-02-10", "DE", "7", "P2"]
+];
+const relBaseMap = mkMap(relBaseFields, ["time", "geography", "amount", "product"], ["time", "geo", "measure", "identifier"]);
+const relProdFields = ["Item_No", "Item_Name", "Category"];
+const relProdRows = [["P1", "Widget", "Books"], ["P2", "Gadget", "Toys"]];
+const relProdMap = mkMap(relProdFields, ["product", null, null], ["identifier", "dimension", "dimension"]);
+const relDS = {
+  base: { id: "dsBase", name: "Sales", kind: "transactions", hasData: true, mapping: relBaseMap, rowsArr: relBaseRows },
+  prod: { id: "dsProd", name: "Products", kind: "generic", hasData: true, mapping: relProdMap, rowsArr: relProdRows }
+};
+const relJoins = [
+  { id: "j1", from: "dsBase", fromConcept: "product", to: "dsProd", toConcept: "product", index: Core.Joins.buildIndex(relProdRows, relProdMap, "product") }
+];
+const byId = {}; Object.keys(relDS).forEach(k => byId[relDS[k].id] = relDS[k]);
+
+// 7.1 enrichView appends a field from a joined dataset and leaves the base unchanged when present.
+const view = Core.Joins.enrichView({ id: "dsBase", mapping: relBaseMap, rowsArr: relBaseRows }, ["Item_Name"], relJoins, byId);
+if (!view || view.mapping.length !== 5 || view.rowsArr.length !== 3) { console.error("FAIL: enrichView shape", JSON.stringify(view && { map: view.mapping.length, rows: view.rowsArr.length })); process.exit(1); }
+if (view.rowsArr[0][4] !== "Widget" || view.rowsArr[2][4] !== "Gadget") { console.error("FAIL: enrichView joined label", JSON.stringify(view.rowsArr.map(r => r[4]))); process.exit(1); }
+const noView = Core.Joins.enrichView({ id: "dsBase", mapping: relBaseMap, rowsArr: relBaseRows }, ["Units"], relJoins, byId);
+if (noView !== null) { console.error("FAIL: enrichView must return null when no enrichment needed"); process.exit(1); }
+console.log("relational 7.1 enrichView: ok");
+
+// 7.2 A chart on the base dataset splitBy a joined dimension resolves through the join.
+const relChart = Core.Charts.buildSeries({ type: "bar", x: { field: "Date", bucket: "month" }, y: [{ field: "Units", agg: "sum" }], splitBy: "Item_Name" }, view.rowsArr, view.mapping, {});
+if (relChart.datasets.length !== 2) { console.error("FAIL: relational chart splitBy", JSON.stringify(relChart.datasets.map(d => d.label))); process.exit(1); }
+const widget = relChart.datasets.find(d => d.label.indexOf("Widget") === 0);
+if (!widget || widget.data[0] !== 15 || widget.data[1] !== 0) { console.error("FAIL: relational chart Widget data", JSON.stringify(widget)); process.exit(1); }
+console.log("relational 7.2 chart splitBy joined dim: ok");
+
+// 7.3 enrichView leaves the base mapping intact when the field is already present (no false enrichment).
+const baseOnly = Core.Joins.enrichView({ id: "dsBase", mapping: relBaseMap, rowsArr: relBaseRows }, ["Country_Code"], relJoins, byId);
+if (baseOnly !== null) { console.error("FAIL: field already present must not enrich"); process.exit(1); }
+console.log("relational 7.3 no-op when field present: ok");
+
+// ---- Phase 7: Verification layer (PRD test additions) ----
+
+// 8.1 An answer containing a fabricated number is flagged; an answer whose numbers all appear in
+// tool results is fully verified.
+const toolRes = [
+  { tool: "query", result: { resultId: "r1", rows: [{ Units: 22 }], count: 1 } },
+  { tool: "query", result: { resultId: "r2", rows: [{ Units: 9537 }], count: 1 } }
+];
+const okClaims = Core.Verify.checkClaims("Total units are 22 [r1] and 9537 [r2].", toolRes);
+if (okClaims.verifiedCount !== 2 || okClaims.totalCount !== 2 || okClaims.unverified.length !== 0) { console.error("FAIL: fully-verified answer", JSON.stringify(okClaims)); process.exit(1); }
+const fabClaims = Core.Verify.checkClaims("Total units are 22 and 99.", toolRes);
+if (fabClaims.verifiedCount !== 1 || fabClaims.unverified.length !== 1 || fabClaims.unverified[0].value !== 99) { console.error("FAIL: fabricated number must be flagged", JSON.stringify(fabClaims)); process.exit(1); }
+console.log("phase 8.1 claim check: ok");
+
+// 8.2 extractNumbers handles decimals, thousands separators, percentages.
+const ex = Core.Verify.extractNumbers("Revenue was 1,234.5 (45%) and -7 units.");
+const vals = ex.map(n => n.value);
+if (vals[0] !== 1234.5 || vals[1] !== 45 || vals[2] !== -7) { console.error("FAIL: extractNumbers", JSON.stringify(vals)); process.exit(1); }
+console.log("phase 8.2 extractNumbers: ok");
+
+// 8.3 Empty-result honesty: an unverified figure after an empty query is flagged as fabrication.
+const emptyRes = [{ tool: "query", result: { resultId: "r3", rows: [], count: 0 } }];
+const emptyClaims = Core.Verify.checkClaims("We had 5 deals in that segment.", emptyRes);
+if (emptyClaims.emptyResult !== true || emptyClaims.fabricated !== true || emptyClaims.unverified.length !== 1) { console.error("FAIL: empty-result honesty", JSON.stringify(emptyClaims)); process.exit(1); }
+if (!Core.Verify.hasEmptyResult(emptyRes)) { console.error("FAIL: hasEmptyResult"); process.exit(1); }
+console.log("phase 8.3 empty-result honesty: ok");
+
+// 8.4 parseCitations extracts resultId chips in order, deduplicated.
+const cites = Core.Verify.parseCitations("As [r1] shows, and [r2], and [r1] again.");
+if (cites.join(",") !== "r1,r2") { console.error("FAIL: parseCitations", JSON.stringify(cites)); process.exit(1); }
+console.log("phase 8.4 parseCitations: ok");
+
+// 8.5 provenance + definition registry.
+const prov = Core.Verify.provenance({ dataset: "ds1", sourceFile: "sales.csv", rowsUsed: 4849, definition: "sum of units" });
+if (prov.dataset !== "ds1" || prov.rowsUsed !== 4849 || !prov.generatedAt) { console.error("FAIL: provenance", JSON.stringify(prov)); process.exit(1); }
+const reg = Core.Verify.definitionRegistry(Core.Metrics.metricPacks("transactions"));
+if (!reg.totalUnits || reg.totalUnits.definition.indexOf("Sum") !== 0) { console.error("FAIL: definitionRegistry", JSON.stringify(reg.totalUnits)); process.exit(1); }
+console.log("phase 8.5 provenance + definition registry: ok");
 
 console.log("\nALL CHECKS PASSED");
 })();

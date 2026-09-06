@@ -1198,27 +1198,101 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     // Enrich `from` rows with a measure column from the joined dataset (left join: unmatched keys → null).
     enrichColumn: function (fromRows, fromMapping, toIndex, toRowsArr, toMapping, join, valueConcept) {
       var srcCol = Entities.columnForConcept(fromMapping, join.fromConcept);
-      var valCol = Entities.columnForConcept(toMapping, valueConcept);
-      if (!srcCol || !valCol || !toIndex) return null;
-      var ci = this.colIdx(fromMapping, srcCol), vi = this.colIdx(toMapping, valCol);
-      if (ci < 0 || vi < 0) return null;
-      var out = [];
-      for (var i = 0; i < fromRows.length; i++) {
-        var v = fromRows[i][ci];
-        var key = v == null ? "" : String(v).trim();
-        var vals = toIndex.index[key] || [];
-        if (!vals.length) { out.push(null); continue; }
-        // Aggregate (sum) across all matching rows so one-to-many joins don't drop data.
-        var sum = 0, any = false;
-        for (var j = 0; j < vals.length; j++) {
-          var n = toRowsArr[vals[j]][vi];
-          if (n != null && !isNaN(n)) { sum += Number(n); any = true; }
-        }
-        out.push(any ? sum : null);
-      }
-      return out;
-    }
-  };
+              // Resolve the value column by concept first, then by field name (concept/header/substring),
+              // so enrichment works for a named field (e.g. "Item_Name") that isn't bound to a concept.
+              var valCol = Entities.columnForConcept(toMapping, valueConcept);
+              if (!valCol && Charts && Charts.fieldColumn) { var fc = Charts.fieldColumn(toMapping, valueConcept); if (fc) valCol = fc.name; }
+              if (!srcCol || !valCol || !toIndex) return null;
+              var ci = this.colIdx(fromMapping, srcCol), vi = this.colIdx(toMapping, valCol);
+              if (ci < 0 || vi < 0) return null;
+              var out = [];
+              for (var i = 0; i < fromRows.length; i++) {
+                var v = fromRows[i][ci];
+                var key = v == null ? "" : String(v).trim();
+                var vals = toIndex.index[key] || [];
+                if (!vals.length) { out.push(null); continue; }
+                // Aggregate numeric values (sum) so one-to-many joins don't drop data; for a non-numeric
+                // dimension (e.g. a product label) attach the first matching value instead.
+                var sum = 0, any = false, firstVal = null;
+                for (var j = 0; j < vals.length; j++) {
+                  var n = toRowsArr[vals[j]][vi];
+                  if (n == null || String(n).trim() === "") continue;
+                  if (firstVal == null) firstVal = n;
+                  if (!isNaN(n)) { sum += Number(n); any = true; }
+                }
+                out.push(any ? sum : (firstVal != null ? firstVal : null));
+              }
+              return out;
+            },
+
+            // ---- Relational enrichment (Phase 5/6 from main v6.11: charts + metrics across declared joins) ----
+            // A field may live on another dataset reachable through a declared join. `fieldExists`
+            // resolves a concept/header/substring the same way the chart + metric engines do.
+            fieldExists: function (mapping, field) {
+              if (!mapping || !field) return false;
+              return Charts.fieldColumn(mapping, field) != null;
+            },
+
+            // Enrich a base dataset's rows with `field` (a measure/dimension not present on the base)
+            // by following declared joins, recursively, to a dataset that has it. Returns an array of
+            // values aligned to baseRows (summed over one-to-many matches; null when unmatched), or null
+            // if the field cannot be reached.
+            enrichField: function (base, field, joins, datasetsById, visited) {
+              base = base || {};
+              visited = visited || {};
+              var baseRows = base.rowsArr || [], baseMapping = base.mapping || [];
+              if (Joins.fieldExists(baseMapping, field)) {
+                var idx0 = Joins.colIdx(baseMapping, Charts.fieldColumn(baseMapping, field).name);
+                return baseRows.map(function (r) { return r[idx0]; });
+              }
+              if (visited[base.id]) return null;
+              visited[base.id] = true;
+              joins = joins || [];
+              for (var i = 0; i < joins.length; i++) {
+                var j = joins[i];
+                var fromSide = j.from === base.id, toSide = j.to === base.id;
+                if (!fromSide && !toSide) continue;
+                var partnerId = fromSide ? j.to : j.from;
+                var baseConcept = fromSide ? j.fromConcept : j.toConcept;
+                var partnerConcept = fromSide ? j.toConcept : j.fromConcept;
+                var partner = datasetsById && datasetsById[partnerId];
+                if (!partner || !partner.mapping) continue;
+                var toRows = partner.rowsArr, toMapping = partner.mapping;
+                if (!Joins.fieldExists(toMapping, field)) {
+                  var sub = Joins.enrichField({ id: partnerId, rowsArr: toRows, mapping: toMapping }, field, joins, datasetsById, visited);
+                  if (!sub) continue;
+                  toRows = toRows.map(function (r, k) { return r.slice().concat([sub[k]]); });
+                  toMapping = toMapping.concat([{ name: field, idx: toMapping.length, role: "measure", type: "number", concept: field, synthetic: true }]);
+                }
+                var normJoin = { fromConcept: baseConcept, toConcept: partnerConcept };
+                var toIndex = Joins.buildIndex(toRows, toMapping, partnerConcept);
+                var values = Joins.enrichColumn(baseRows, baseMapping, toIndex, toRows, toMapping, normJoin, field);
+                if (values) return values;
+              }
+              return null;
+            },
+
+            // Build a virtual enriched dataset view for a base dataset. `fields` is the set of
+            // concepts/headers the chart or metric needs. Returns { rowsArr, mapping } with any missing
+            // field appended as a synthetic column, or null when nothing needed enriching.
+            enrichView: function (base, fields, joins, datasetsById) {
+              if (!base || !base.mapping || !fields || !fields.length) return null;
+              var rows = (base.rowsArr || []).map(function (r) { return r.slice(); });
+              var mapping = (base.mapping || []).slice();
+              var changed = false;
+              for (var f = 0; f < fields.length; f++) {
+                var field = fields[f];
+                if (Joins.fieldExists(mapping, field)) continue;
+                var values = Joins.enrichField(base, field, joins, datasetsById, {});
+                if (!values) continue;
+                var nIdx = mapping.length;
+                for (var i = 0; i < rows.length; i++) rows[i].push(values[i] == null ? null : values[i]);
+                mapping.push({ name: field, idx: nIdx, role: "measure", type: "number", concept: field, synthetic: true });
+                changed = true;
+              }
+              return changed ? { rowsArr: rows, mapping: mapping } : null;
+            }
+          };
 
   // ---- Store module (light observable state container) ----
   var Store = {};
@@ -2141,7 +2215,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       var m;
       while ((m = re.exec(s)) !== null) {
         var v = parseFloat(m[0].replace(/,/g, ""));
-        if (Number.isFinite(v)) out.push({ str: m[0], num: v });
+        if (Number.isFinite(v)) out.push({ str: m[0], num: v, value: v });
       }
       return out;
     }
@@ -2161,37 +2235,79 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
   // Citation pattern [rN] — the model cites the resultId that produced a figure.
   function parseCitations(text) {
-    var out = [], re = /\[r(\d+)\]/g, m;
-    while ((m = re.exec(String(text == null ? "" : text))) !== null) out.push("r" + m[1]);
+      var out = [], seen = {}, re = /\[r(\d+)\]/g, m;
+      while ((m = re.exec(String(text == null ? "" : text))) !== null) {
+        var id = "r" + m[1];
+        if (!seen[id]) { seen[id] = true; out.push(id); }
+      }
+      return out;
+    }
+    Verify.parseCitations = parseCitations;
+
+  // True when any tool result returned zero rows/datasets (a fabrication signal). Exposed so the
+    // harness (and callers) can test "empty result honesty" directly.
+    function hasEmptyResult(toolResults) {
+      return (toolResults || []).some(function (r) {
+        var res = r.result || {};
+        return res.count === 0 || (res.rows && !res.rows.length) || (res.datasets && !res.datasets.length);
+      });
+    }
+    Verify.hasEmptyResult = hasEmptyResult;
+
+    // Match every number in the text against every number in this turn's tool results within a
+    // small tolerance. emptyResult is true when any tool returned zero rows — an unverified
+    // figure in that situation is a flagged fabrication, not just an unknown.
+    function checkClaims(text, results, tolerance) {
+      var numbers = [];
+      tolerance = tolerance != null ? tolerance : VERIFY_REL_TOL;
+      (results || []).forEach(function (r) {
+        var res = r.result || {};
+        numbers = numbers.concat(collectResultNumbers(res));
+      });
+      var emptyResult = hasEmptyResult(results);
+      var ns = extractNumbers(text);
+      var verified = [], unverified = [];
+      ns.forEach(function (n) {
+        var hit = false;
+        for (var i = 0; i < numbers.length; i++) {
+          var b = numbers[i];
+          if (Math.abs(n.num - b) <= Math.max(tolerance, Math.abs(b) * tolerance)) { hit = true; break; }
+        }
+        if (hit) verified.push(n); else unverified.push(n);
+      });
+      return {
+        total: ns.length, verifiedCount: verified.length, totalCount: ns.length,
+        verified: verified, unverified: unverified, citations: parseCitations(text),
+        emptyResult: emptyResult, hasEmptyResult: emptyResult,
+        fabricated: emptyResult && unverified.length > 0,
+        results: results || []
+      };
+    }
+    Verify.checkClaims = checkClaims;
+
+  // Build a provenance footer object for a metric/chart/KPI (main v6.12 API).
+  function provenance(opts) {
+    opts = opts || {};
+    return {
+      dataset: opts.dataset || null,
+      sourceFile: opts.sourceFile || null,
+      loadedAt: opts.loadedAt || null,
+      filters: opts.filters || null,
+      definition: opts.definition || null,
+      agg: opts.agg || null,
+      rowsUsed: opts.rowsUsed != null ? opts.rowsUsed : null,
+      generatedAt: new Date().toISOString()
+    };
+  }
+  Verify.provenance = provenance;
+
+  // Definition registry: one place where every metric definition lives, surfaced on hover.
+  function definitionRegistry(defs) {
+    var out = {};
+    (defs || []).forEach(function (d) { out[d.id || d.label] = { label: d.label, definition: d.definition || "", agg: d.agg || null, field: d.field || null }; });
     return out;
   }
-  Verify.parseCitations = parseCitations;
-
-  // Match every number in the text against every number in this turn's tool results within a
-  // small tolerance. hasEmptyResult is true when any tool returned zero rows — an unverified
-  // figure in that situation is a flagged fabrication, not just an unknown.
-  function checkClaims(text, results) {
-    var byId = {}, numbers = [], hasEmptyResult = false;
-    (results || []).forEach(function (r) {
-      var res = r.result || {};
-      var id = res.resultId || ("r" + (Object.keys(byId).length + 1)); // positional fallback if a tool ever lacked an id
-      byId[id] = r;
-      if (res.count === 0 || (res.rows && !res.rows.length) || (res.datasets && !res.datasets.length)) hasEmptyResult = true;
-      numbers = numbers.concat(collectResultNumbers(res));
-    });
-    var ns = extractNumbers(text);
-    var verified = [], unverified = [];
-    ns.forEach(function (n) {
-      var hit = false;
-      for (var i = 0; i < numbers.length; i++) {
-        var b = numbers[i];
-        if (Math.abs(n.num - b) <= Math.max(VERIFY_REL_TOL, Math.abs(b) * VERIFY_REL_TOL)) { hit = true; break; }
-      }
-      if (hit) verified.push(n); else unverified.push(n);
-    });
-    return { total: ns.length, verified: verified, unverified: unverified, citations: parseCitations(text), hasEmptyResult: hasEmptyResult, results: results || [] };
-  }
-  Verify.checkClaims = checkClaims;
+  Verify.definitionRegistry = definitionRegistry;
 
   // Turn [rN] citations into chip markup the app binds click handlers to (safe inline HTML after sanitization).
   function renderCitations(text) {
@@ -4566,7 +4682,14 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
             var ml = document.createElement("div");
             ml.style.cssText = "display:flex;flex-wrap:wrap;gap:6px";
             Core.Metrics.metricPacks(d.kind).forEach(function (def) {
-              var r = Core.Metrics.computeMetric(def, d.rowsArr, d.mapping, { datasetId: d.id });
+                          // Relational data access: a metric may use a measure that lives on a related
+                          // (declared-joined) dataset — enrich the rows before computing.
+                          var metricSrc = { rows: d.rowsArr, mapping: d.mapping };
+                          if (def.field) {
+                            var mv = enrichViewFor(d, [def.field]);
+                            if (mv) metricSrc = { rows: mv.rowsArr, mapping: mv.mapping };
+                          }
+                          var r = Core.Metrics.computeMetric(def, metricSrc.rows, metricSrc.mapping, { datasetId: d.id });
               var chip = document.createElement("div");
               chip.style.cssText = "font-size:.72rem;padding:2px 8px;border:1px solid var(--border,#8884);border-radius:10px";
               chip.textContent = def.label + ": " + (r.available ? r.formatted : "n/a (" + r.reason + ")");
@@ -4801,21 +4924,52 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     var rec = currentChartDataset();
     if (!rec || !rec.mapping) { errEl.style.display = "inline"; errEl.textContent = "Load a dataset first."; return; }
     var spec = readChartSpecFromForm();
-    var v = Core.Charts.validateSpec(spec, rec.mapping);
-    if (!v.valid) { errEl.style.display = "inline"; errEl.textContent = v.errors.join("; "); return; }
-    errEl.style.display = "none";
-    savedCharts.push({ id: spec.id, spec: spec });
-    renderChartList();
-    renderAll();
-  });
+      // Validate against the ENRICHED mapping so a chart can use a field that lives on a
+      // related (joined) dataset — not just the base dataset's own columns.
+      var vMap = rec.mapping;
+      var ev = enrichViewFor(rec, chartWantedFields(spec), rec.rowsArr);
+      if (ev) vMap = ev.mapping;
+      var v = Core.Charts.validateSpec(spec, vMap);
+      if (!v.valid) { errEl.style.display = "inline"; errEl.textContent = v.errors.join("; "); return; }
+      errEl.style.display = "none";
+      savedCharts.push({ id: spec.id, spec: spec });
+      renderChartList();
+      renderAll();
+    });
 
-  // Render one saved chart spec into its own canvas via the shared renderer.
-  function renderChartFromSpec(rec, spec) {
-    var fb = filteredRowsFor(rec);
-    var series = Core.Charts.buildSeries(spec, fb.rows, rec.mapping, { aggMode: store.get("aggMode") });
-    if (spec.type === "table") return { html: tableHtml(series) };
-    return series;
-  }
+  // ---- Relational data access (charts + metrics across declared joins) ----
+    // A chart or metric may reference a field that lives on another dataset. `enrichViewFor`
+    // follows the declared join graph to build a virtual enriched view of the base dataset.
+    function chartWantedFields(spec) {
+      var fields = [];
+      function add(f) { if (f && fields.indexOf(f) === -1) fields.push(f); }
+      if (spec && spec.x) { if (spec.x.field && !spec.x.bucket) add(spec.x.field); }
+      (spec && spec.y || []).forEach(function (yd) { if (yd.field) add(yd.field); });
+      if (spec && spec.splitBy) add(spec.splitBy);
+      return fields;
+    }
+    function enrichViewFor(rec, fields, baseRows) {
+      if (!rec || !rec.mapping || !fields || !fields.length) return null;
+      var byId = {};
+      datasets.forEach(function (d) { byId[d.id] = d; });
+      return Core.Joins.enrichView({ id: rec.id, mapping: rec.mapping, rowsArr: baseRows || rec.rowsArr }, fields, declaredJoins, byId);
+    }
+    // Resolve the rows+mapping a chart should draw from, enriching across joins when needed.
+    // Enrichment applies to the FILTERED rows so the current filter bus is respected.
+    function chartSource(rec, spec) {
+      var fb = filteredRowsFor(rec);
+      var view = enrichViewFor(rec, chartWantedFields(spec), fb.rows);
+      if (view) return { rows: view.rowsArr, mapping: view.mapping, fb: fb };
+      return { rows: fb.rows, mapping: rec.mapping, fb: fb };
+    }
+
+    // Render one saved chart spec into its own canvas via the shared renderer.
+    function renderChartFromSpec(rec, spec) {
+      var src = chartSource(rec, spec);
+      var series = Core.Charts.buildSeries(spec, src.rows, src.mapping, { aggMode: store.get("aggMode") });
+      if (spec.type === "table") return { html: tableHtml(series) };
+      return series;
+    }
   function tableHtml(series) {
     var cols = series.datasets.map(function (d) { return d.label; });
     var h = '<div class="table-wrap"><table class="spec-table"><thead><tr><th></th>' + cols.map(function (c) { return "<th>" + esc(c) + "</th>"; }).join("") + "</tr></thead><tbody>";
@@ -4829,8 +4983,8 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   // Draw a saved chart into a target canvas element.
   function drawSavedChart(canvas, rec, spec) {
     if (!canvas || !rec) return;
-    var fb = filteredRowsFor(rec);
-    var series = Core.Charts.buildSeries(spec, fb.rows, rec.mapping, { aggMode: store.get("aggMode") });
+      var src = chartSource(rec, spec);
+      var series = Core.Charts.buildSeries(spec, src.rows, src.mapping, { aggMode: store.get("aggMode") });
     if (spec.type === "table") { canvas.parentNode.innerHTML = tableHtml(series); return; }
     var th = chartTheme();
     var chartType = spec.type;
@@ -5497,7 +5651,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         for (var i = 0; i < savedCharts.length; i++) {
           if (savedCharts[i].id === id) {
             var rec = datasetById(savedCharts[i].spec.datasetId) || datasetById(activeId) || datasets[0];
-            if (rec) { var s = Core.Charts.buildSeries(savedCharts[i].spec, filteredRowsFor(rec).rows, rec.mapping, { aggMode: store.get("aggMode") }); return { type: s.type, labels: s.labels, datasets: s.datasets }; }
+                  if (rec) { var src = chartSource(rec, savedCharts[i].spec); var s = Core.Charts.buildSeries(savedCharts[i].spec, src.rows, src.mapping, { aggMode: store.get("aggMode") }); return { type: s.type, labels: s.labels, datasets: s.datasets }; }
           }
         }
         return null;
