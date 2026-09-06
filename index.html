@@ -177,6 +177,16 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     .rows-modal table { border-collapse: collapse; font-size: .75rem; }
     .rows-modal td, .rows-modal th { border: 1px solid var(--border); padding: 3px 8px; }
     .rows-modal .close { float: right; }
+  /* Phase 8: text analytics */
+  .progress { height: 8px; background: var(--panel2); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; margin: 6px 0; }
+  .progress .fill { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+  .tax-chip { display: inline-block; background: rgba(56,189,248,.12); border: 1px solid rgba(56,189,248,.35); border-radius: 10px; padding: 2px 8px; font-size: .75rem; margin: 2px 4px 2px 0; }
+  .tax-edit-row { display: grid; grid-template-columns: 140px 1fr 1fr auto; gap: 6px; margin: 4px 0; align-items: center; font-size: .78rem; }
+  .tax-edit-row input { padding: 3px 6px; font-size: .78rem; }
+  .theme-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .theme-row { display: flex; align-items: center; gap: 8px; font-size: .8rem; }
+  .theme-count { min-width: 34px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .text-status { font-size: .78rem; color: var(--muted); margin: 4px 0; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } aside.sidebar { position: static; } }
     .ds-tabs { max-width: 1200px; margin: 14px auto 0; padding: 0 16px; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -192,7 +202,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.12 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.13 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
@@ -233,6 +243,12 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
           </h3>
           <div class="checklist" id="countryChecklist"><span class="muted">Load a CSV first</span></div>
         </div>
+                <div class="filter-group" id="themeFilterGroup" style="display:none">
+                  <h3>Theme (from text analytics)
+                    <span class="mini-btns"><button type="button" id="themeAllBtn" title="Select all themes">All</button><button type="button" id="themeNoneBtn" title="Deselect all themes">None</button></span>
+                  </h3>
+                  <div class="checklist" id="themeChecklist"><span class="muted">No themes yet</span></div>
+                </div>
     <div class="filter-group">
       <h3>Date range</h3>
       <div style="display:flex;flex-direction:column;gap:6px;font-size:.85rem">
@@ -306,7 +322,12 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
               <div class="panel-title">Data coverage (what this file contains)<button type="button" id="remapBtn" title="Re-open the field assignment panel for this dataset (parses the data again with your changes)">Edit mapping</button></div>
         <div id="coveragePanel"><span class="muted">Load a CSV to see which concepts are present, partial, or absent.</span></div>
       </div>
-      </div>
+
+            <div class="card" id="textInsightsCard">
+              <div class="panel-title">Text insights (call notes / activity comments)</div>
+              <div id="textInsightsPanel"><span class="muted">Load a dataset with a text column to analyze call notes or comments.</span></div>
+            </div>
+            </div>
 
       <div class="card" id="joinsCard">
         <div class="panel-title">Relationships (cross-dataset joins)</div>
@@ -614,14 +635,15 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         // not fit this one (Phase 3 multi-source); falls back to the decided format when nothing matches.
         resolveTimeFormat(timeCol, dataRows, timeIdx);
     var rows = [], badDates = 0, badUnits = 0;
-    (dataRows || []).forEach(function (r) {
+        (dataRows || []).forEach(function (r, _ri) {
       if (!r || r.length === 0) return;
       var date = parseDateByFormat(r[timeIdx], timeCol.format || "yyyymmdd");
       if (!date) { badDates++; return; }
       var units = parseNumberValue(r[unitsIdx]);
       if (units == null) { badUnits++; return; }
       rows.push({
-        date: date,
+            _ri: _ri,
+            date: date,
         articleId: String(r[productIdx] == null ? "" : r[productIdx]).trim(),
         countryCode: String(r[countryIdx] == null ? "" : r[countryIdx]).trim().toUpperCase(),
         units: units
@@ -673,10 +695,11 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
             var cI = countryCol ? idx[normalizeHeader(countryCol.name)] : -1;
             var pI = productCol ? idx[normalizeHeader(productCol.name)] : -1;
             var rows = [];
-    (dataRows || []).forEach(function (r) {
+                (dataRows || []).forEach(function (r, _ri) {
       if (!r || r.length === 0) return;
       rows.push({
-        date: tI >= 0 && timeCol.format ? parseDateByFormat(r[tI], timeCol.format) : null,
+                    _ri: _ri,
+                    date: tI >= 0 && timeCol.format ? parseDateByFormat(r[tI], timeCol.format) : null,
         articleId: pI >= 0 && r[pI] != null && String(r[pI]).trim() !== "" ? String(r[pI]).trim() : null,
         countryCode: cI >= 0 && r[cI] != null && String(r[cI]).trim() !== "" ? String(r[cI]).trim().toUpperCase() : null,
         units: uI >= 0 ? parseNumberValue(r[uI]) : null
@@ -1967,10 +1990,21 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       }
       case "extract_text_insights": {
         if (!ds || !ds.mapping) return { error: "No dataset for extract_text_insights." };
-        var col = Charts.fieldColumn(ds.mapping, args.field);
-        if (!col) return { error: "Unknown text field '" + args.field + "'." };
-        return { resultId: rid(), datasetId: ds.id, field: args.field, taxonomy: [], sentiment: null, themes: [], note: "Phase 8 text pipeline not yet implemented." };
-      }
+              var col0 = Charts.fieldColumn(ds.mapping, args.field);
+              if (!col0) return { error: "Unknown text field '" + args.field + "'." };
+              // Deterministic: if the dataset has a locked, classified text pipeline (run in the UI),
+              // return its summary; otherwise say what the user must do — never invent taxonomy or themes.
+              if (!ds.textInsights || !ds.textInsights.locked || !ds.textInsights.classified) {
+                return { resultId: rid(), datasetId: ds.id, field: args.field, note: "No text pipeline for this dataset yet. In the UI: Text insights → Propose taxonomy → lock it → Classify all rows." };
+              }
+              var st = TextAnalytics.themeStats(ds.rowsArr, ds.textInsights.themeIdx, ds.textInsights.escalationIdx, ds.textInsights.confidenceIdx);
+              return {
+                resultId: rid(), datasetId: ds.id, field: args.field,
+                taxonomy: (ds.textInsights.taxonomy.categories || []).map(function (c) { return c.name; }),
+                themes: st.themes,
+                sentiment: null, escalationFlagCount: st.escalationCount, lowConfidenceCount: st.lowConfidenceCount, total: st.total
+              };
+            }
       default:
         return { error: "Unknown tool '" + name + "'. Valid tools: " + TOOL_DEFS.map(function (t) { return t.name; }).join(", ") };
     }
@@ -2103,6 +2137,198 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     if (name === "create_chart") return "create_chart · " + ((args.spec && args.spec.type) || args.type || "chart");
     return name;
   };
+
+    // ---- Phase 8: text analytics for call and activity data ----
+    // Two-pass taxonomy, this ordering matters: Pass 1 proposes a candidate taxonomy from a sample
+    // (never a naive per-row classification), the human locks it, Pass 2 classifies all rows with a
+    // strict per-row JSON schema. Results are cached by hash of the text so re-runs cost nothing,
+    // and are written back as derived columns (sentiment, label, theme, escalation, confidence) so
+    // they become ordinary filterable dimensions and chartable measures.
+    var TextAnalytics = {};
+
+    // FNV-1a 32-bit hex — stable text hash for the cache and taxonomy signatures.
+    function textHash(str) {
+      var s = String(str == null ? "" : str);
+      var h = 2166136261;
+      for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0; }
+      return ("0000000" + h.toString(16)).slice(-8);
+    }
+    TextAnalytics.textHash = textHash;
+
+    // Signature of a locked taxonomy — changing the taxonomy invalidates cached classifications.
+    function taxonomySig(taxonomy) {
+      var names = (taxonomy.categories || []).map(function (c) { return String(c.name || "").toLowerCase(); }).sort();
+      return textHash(JSON.stringify(names) + "|" + textHash((taxonomy.categories || []).map(function (c) { return String(c.definition || ""); }).join("¦")));
+    }
+    TextAnalytics.taxonomySig = taxonomySig;
+
+    // Up to maxN non-empty sample texts for Pass 1 (deterministic — first maxN distinct, trimmed).
+    function sampleTexts(rowsArr, colIdx, maxN) {
+      var out = [], seen = {};
+      maxN = maxN || 300;
+      (rowsArr || []).forEach(function (r) {
+        if (out.length >= maxN) return;
+        var v = r && colIdx < r.length ? String(r[colIdx] == null ? "" : r[colIdx]).trim() : "";
+        if (!v || seen[v]) return;
+        seen[v] = true;
+        out.push(v);
+      });
+      return out;
+    }
+    TextAnalytics.sampleTexts = sampleTexts;
+
+    function taxonomyJson(c) {
+      return "{\"name\":\"" + String(c.name || "").replace(/"/g, "'") + "\",\"definition\":\"" + String(c.definition || "").replace(/"/g, "'") + "\",\"examples\":[" + (c.examples || []).map(function (e) { return "\"" + String(e).replace(/"/g, "'") + "\""; }).join(",") + "]}";
+    }
+
+    // Pass 1 prompt: propose 8–15 categories with definitions and example phrases.
+    function buildTaxonomyPrompt(samples) {
+      return "Below are sample rows from a text column (call notes / activity comments / dispositions / transcripts).\n\n" +
+        samples.map(function (s, i) { return (i + 1) + ". " + s; }).join("\n") + "\n\n" +
+        "Propose a candidate taxonomy of roughly 8 to 15 categories that cleanly cover these texts (fewer is fine when the content is narrow). " +
+        "Avoid near-duplicate themes — merge anything that overlaps.\n" +
+        "Reply with a single JSON object, no prose:\n" +
+        "{\"categories\":[{\"name\":\"<short category name>\",\"definition\":\"<one-sentence definition>\",\"examples\":[\"<example phrase>\"]}]}";
+    }
+    TextAnalytics.buildTaxonomyPrompt = buildTaxonomyPrompt;
+
+    // Parse Pass 1 output: {categories:[{name,definition,examples}]}. Returns {taxonomy, error}.
+    function parseTaxonomy(text) {
+      var raw = String(text == null ? "" : text);
+      var fenced = /\{[\s\S]*\}/.exec(raw);
+      if (!fenced) return { error: "No JSON object in the model reply." };
+      var obj;
+      try { obj = JSON.parse(fenced[0]); } catch (e) { return { error: "Could not parse taxonomy JSON: " + e.message }; }
+      if (!obj || !Array.isArray(obj.categories) || !obj.categories.length) return { error: "The model reply has no 'categories' array." };
+      var cats = obj.categories.map(function (c) {
+        return {
+          name: String(c && c.name != null ? c.name : "").trim(),
+          definition: String(c && c.definition != null ? c.definition : "").trim(),
+          examples: Array.isArray(c && c.examples) ? c.examples.map(function (e) { return String(e); }) : []
+        };
+      }).filter(function (c) { return c.name; });
+      if (!cats.length) return { error: "Every category needs a name." };
+      return { taxonomy: { categories: cats } };
+    }
+    TextAnalytics.parseTaxonomy = parseTaxonomy;
+
+    // Pass 2 prompt: classify a batch against the LOCKED taxonomy with a strict per-row JSON schema.
+    function buildClassifyPrompt(taxonomy, texts) {
+      return "Classify each numbered text below using ONLY the locked taxonomy. Sentiment is -1 (negative) .. 1 (positive); sentimentLabel is one of negative/neutral/positive. " +
+        "categories must come only from the taxonomy names. escalationFlag is true when the text warrants urgent human follow-up. confidence 0..1 reflects how sure you are.\n\n" +
+        "Locked taxonomy:\n" + (taxonomy.categories || []).map(taxonomyJson).join("\n") + "\n\n" +
+        "Texts:\n" + texts.map(function (t, i) { return (i + 1) + ". " + t; }).join("\n") + "\n\n" +
+        "Reply with ONE JSON array only (one object per text, same order, no prose):\n" +
+        "[{\"sentiment\":0.2,\"sentimentLabel\":\"positive\",\"categories\":[\"CategoryName\"],\"keyPhrases\":[\"phrase\"],\"escalationFlag\":false,\"confidence\":0.9}]";
+    }
+    TextAnalytics.buildClassifyPrompt = buildClassifyPrompt;
+
+    // Parse Pass 2 output with strict validation. Any category outside the taxonomy is REJECTED
+    // (returned as {error}) so the caller retries with a corrective message — never accepted.
+    function parseClassification(text, taxonomy) {
+      var raw = String(text == null ? "" : text);
+      var fenced = /\[[\s\S]*\]/.exec(raw);
+      if (!fenced) return { error: "No JSON array in the classification reply." };
+      var arr;
+      try { arr = JSON.parse(fenced[0]); } catch (e) { return { error: "Could not parse classification JSON: " + e.message }; }
+      if (!Array.isArray(arr)) return { error: "Classification reply must be a JSON array." };
+      var names = (taxonomy.categories || []).map(function (c) { return String(c.name || "").toLowerCase(); });
+      for (var i = 0; i < arr.length; i++) {
+        var r = arr[i];
+        if (typeof r !== "object" || r === null) return { error: "Row " + (i + 1) + " is not an object." };
+        if (typeof r.sentiment !== "number" || r.sentiment < -1 || r.sentiment > 1) return { error: "Row " + (i + 1) + " sentiment must be a number in -1..1." };
+        if (typeof r.confidence !== "number" || r.confidence < 0 || r.confidence > 1) return { error: "Row " + (i + 1) + " confidence must be a number in 0..1." };
+        if (typeof r.escalationFlag !== "boolean") return { error: "Row " + (i + 1) + " escalationFlag must be a boolean." };
+        if (!Array.isArray(r.categories)) return { error: "Row " + (i + 1) + " categories must be an array." };
+        for (var j = 0; j < r.categories.length; j++) {
+          if (names.indexOf(String(r.categories[j]).toLowerCase()) === -1) {
+            return { error: "Row " + (i + 1) + " names a category outside the taxonomy: '" + r.categories[j] + "'." };
+          }
+        }
+        if (!Array.isArray(r.keyPhrases)) r.keyPhrases = [];
+        arr[i] = {
+          sentiment: r.sentiment,
+          sentimentLabel: String(r.sentimentLabel == null ? "" : r.sentimentLabel),
+          categories: r.categories.slice(),
+          keyPhrases: r.keyPhrases.map(function (p) { return String(p); }),
+          escalationFlag: r.escalationFlag,
+          confidence: r.confidence
+        };
+      }
+      return { rows: arr };
+    }
+    TextAnalytics.parseClassification = parseClassification;
+
+    // ---- Text cache: by hash of the text + taxonomy signature, so re-runs and re-filters cost nothing ----
+    var TEXT_CACHE_LS_KEY = "salesTextCache";
+    function loadTextCache() { try { return JSON.parse(localStorage.getItem(TEXT_CACHE_LS_KEY)) || {}; } catch (e) { return {}; } }
+    function saveTextCache(cache) { try { localStorage.setItem(TEXT_CACHE_LS_KEY, JSON.stringify(cache)); } catch (e) {} }
+    TextAnalytics.cacheKey = function (text, sig) { return textHash(text) + "|" + sig; };
+    TextAnalytics.cachedResult = function (text, sig) { return loadTextCache()[TextAnalytics.cacheKey(text, sig)] || null; };
+    TextAnalytics.cacheResult = function (text, sig, classification) { var c = loadTextCache(); c[TextAnalytics.cacheKey(text, sig)] = classification; saveTextCache(c); };
+
+    // Write derived columns back onto the dataset (rows stay raw arrays; new columns are appended).
+    // Returns {mapping, added:[names]} — idempotent: re-attach overwrites the same column indices.
+    // Rows without a classification keep blank values (honest: they are counted as unclassified).
+    function attachDerivedColumns(mapping, rowsArr, colIdx, classifiedByRow) {
+      mapping = (mapping || []).map(function (c) { return Object.assign({}, c); });
+      rowsArr = rowsArr || [];
+      var base = (mapping[colIdx] && mapping[colIdx].name) || ("col" + colIdx);
+      var nextIdx = mapping.reduce(function (m, c) { return Math.max(m, (c.idx != null ? c.idx : -1) + 1); }, rowsArr.length);
+      function find(name) { for (var i = 0; i < mapping.length; i++) if (mapping[i].name === name) return mapping[i]; return null; }
+      function ensureCol(name, type, role) {
+        var existing = find(name);
+        if (existing) return existing.idx;
+        var idx = nextIdx++;
+        mapping.push({ name: name, type: type, role: role, concept: null, idx: idx, derived: true });
+        return idx;
+      }
+      var iS = ensureCol(base + "·Sentiment", "number", "measure");
+      var iL = ensureCol(base + "·SentimentLabel", "categorical", "dimension");
+      var iT = ensureCol(base + "·Theme", "categorical", "dimension");
+      var iE = ensureCol(base + "·Escalation", "categorical", "dimension");
+      var iC = ensureCol(base + "·Confidence", "number", "measure");
+      rowsArr.forEach(function (r, i) {
+        var cl = classifiedByRow && classifiedByRow[i];
+        while (r.length <= Math.max(iS, iL, iT, iE, iC)) r.push(null);
+        if (cl) {
+          r[iS] = cl.sentiment;
+          r[iL] = cl.sentimentLabel;
+          r[iT] = cl.categories && cl.categories.length ? cl.categories[0] : "";
+          r[iE] = cl.escalationFlag ? "yes" : "no";
+          r[iC] = cl.confidence;
+        } else {
+          r[iS] = null; r[iL] = ""; r[iT] = ""; r[iE] = ""; r[iC] = null;
+        }
+      });
+      return { mapping: mapping, added: [base + "·SentimentLabel", base + "·Theme", base + "·Escalation"] };
+    }
+    TextAnalytics.attachDerivedColumns = attachDerivedColumns;
+
+    // Deterministic summary of classified texts: theme counts, escalation count, confidence honesty.
+    function themeStats(rowsArr, themeIdx, escalationIdx, confidenceIdx) {
+      var themes = {}, esc = 0, lowConf = 0, total = 0;
+      (rowsArr || []).forEach(function (r) {
+        var t = themeIdx != null && themeIdx < r.length ? String(r[themeIdx] == null ? "" : r[themeIdx]).trim() : "";
+        var c = confidenceIdx != null && confidenceIdx < r.length ? r[confidenceIdx] : null;
+        if (t) { themes[t] = (themes[t] || 0) + 1; total++; } else { themes["(unclassified)"] = (themes["(unclassified)"] || 0) + 1; total++; }
+        if (escalationIdx != null && escalationIdx < r.length && String(r[escalationIdx]) === "yes") esc++;
+        if (c != null && c < 0.5) lowConf++;
+      });
+      return { themes: Object.keys(themes).map(function (k) { return { name: k, count: themes[k] }; }).sort(function (a, b) { return b.count - a.count; }), escalationCount: esc, lowConfidenceCount: lowConf, total: total };
+    }
+    TextAnalytics.themeStats = themeStats;
+
+    // Extract the derived theme/sentiment columns a dataset already carries (for filters + charts).
+    TextAnalytics.derivedCols = function (mapping, baseName) {
+      var out = {};
+      (mapping || []).forEach(function (c) {
+        if (!c.derived && c.name.indexOf(baseName + "·") !== 0) return;
+        var b = c.name.slice((baseName + "·").length);
+        out[b.toLowerCase()] = c.idx;
+      });
+      return out;
+    };
 
   // Deterministic opening profile for a dataset (rendered immediately, never blocks on the model).
   // `rows` are the normalized object rows from the app's filtered view ({date, articleId, countryCode, units}).
@@ -2252,7 +2478,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   AI.filterKey = filterKey;
 
   // ---- Export all modules + legacy aliases on the core namespace ----
-  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools, Verify: Verify };
+  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools, Verify: Verify, TextAnalytics: TextAnalytics };
   // Legacy top-level aliases (backward compat with existing tests)
   api.normalizeHeader = normalizeHeader;
   api.parseDateValue = parseDateValue;
@@ -2293,7 +2519,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   var Core = window.SalesCore;
   // Single observable state container (Phase 0): filters, datasets, chart spec inputs and AI context
   // live here instead of being read back out of the DOM.
-  var store = Core.Store.create({ allRows: [], products: [], countries: [], selectedProducts: [], selectedCountries: [], aggMode: "day", dateFromMs: null, dateToMs: null, aiCtx: null });
+  var store = Core.Store.create({ allRows: [], products: [], countries: [], selectedProducts: [], selectedCountries: [], themes: [], selectedThemes: [], aggMode: "day", dateFromMs: null, dateToMs: null, aiCtx: null });
   var state = { chart: null }; // live Chart.js instance (not serializable state)
   var LS_KEY = "salesAIConfig";
 
@@ -2371,23 +2597,35 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       activeId = id;
       view = "dataset";
       lastLoad = { fields: rec.fields, rowsArr: rec.rowsArr, mapping: rec.mapping, registry: rec.registry }; // feeds coverage into AI prompts
-      store.update({
-        allRows: rec.rows,
-        products: Array.from(new Set(rec.rows.map(function (r) { return r.articleId; }))).sort(),
-        countries: Array.from(new Set(rec.rows.map(function (r) { return r.countryCode; }))).sort(),
-        aiCtx: null // switching datasets must not reuse another dataset's conversation context
-      });
-      showError((rec.warnings || []).join(" "));
-      document.getElementById("rowCount").textContent = rec.rows.length.toLocaleString() + " valid rows";
-      document.getElementById("datasetView").style.display = "block";
-      document.getElementById("overviewPanel").style.display = "none";
-      buildFilters();
-      syncChecklistState(); // seed selectedProducts/selectedCountries in the store
-      renderCoverage();     // Phase 2: show which concepts this file has (and what's missing)
-      renderAll();
-      renderTabs();
-      renderJoins();
-    }
+        // Phase 8: theme options come from the derived theme column of the active dataset.
+        var themes = [];
+        if (rec.textInsights && rec.textInsights.themeIdx != null) {
+          var seen = {};
+          (rec.rowsArr || []).forEach(function (r) {
+            var t = String(r[rec.textInsights.themeIdx] == null ? "" : r[rec.textInsights.themeIdx]).trim();
+            if (t && !seen[t]) { seen[t] = true; themes.push(t); }
+          });
+        }
+        store.update({
+          allRows: rec.rows,
+          products: Array.from(new Set(rec.rows.map(function (r) { return r.articleId; }))).sort(),
+          countries: Array.from(new Set(rec.rows.map(function (r) { return r.countryCode; }))).sort(),
+          themes: themes.sort(),
+          selectedThemes: themes.slice(),
+          aiCtx: null // switching datasets must not reuse another dataset's conversation context
+        });
+        showError((rec.warnings || []).join(" "));
+        document.getElementById("rowCount").textContent = rec.rows.length.toLocaleString() + " valid rows";
+        document.getElementById("datasetView").style.display = "block";
+        document.getElementById("overviewPanel").style.display = "none";
+        buildFilters();
+        syncChecklistState(); // seed selectedProducts/selectedCountries in the store
+        renderCoverage();     // Phase 2: show which concepts this file has (and what's missing)
+        renderTextInsights(); // Phase 8
+        renderAll();
+        renderTabs();
+        renderJoins();
+      }
 
     function commitLoaded(rows, warnings, mapping, fields, rowsArr, name, sourceFile) {
       var rec = null;
@@ -2424,7 +2662,9 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         rec.fields = f;
         rec.warnings = warnings || [];
         rec.hasData = true;
-        Core.Datasets.saveMeta(datasets);
+                // Phase 8: restore a previously locked + cached text pipeline (reloads cost nothing).
+                restoreTextInsightsFromCache(rec);
+                Core.Datasets.saveMeta(datasets);
       }
       if (rec) activateDataset(rec.id);
     }
@@ -2717,6 +2957,473 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     el.innerHTML = html;
   }
 
+      // ---- Phase 8: Text insights panel (two-pass taxonomy + derived columns + drill-to-verbatim) ----
+      // Privacy gate: sending customer text to a remote endpoint is warned once per endpoint and the
+      // choice is remembered (local endpoints are recommended). Returns true when allowed.
+      var TEXT_PRIVACY_LS_KEY = "salesTextPrivacyOK";
+      function textPrivacyAllowed(cfg) {
+        var host = "";
+        try { host = new URL(cfg.baseUrl).host; } catch (e) { host = cfg.baseUrl; }
+        try { var ok = JSON.parse(localStorage.getItem(TEXT_PRIVACY_LS_KEY)) || []; return ok.indexOf(host) !== -1; } catch (e) { return false; }
+      }
+      function rememberTextPrivacy(host) {
+        try { var ok = JSON.parse(localStorage.getItem(TEXT_PRIVACY_LS_KEY)) || []; if (ok.indexOf(host) === -1) ok.push(host); localStorage.setItem(TEXT_PRIVACY_LS_KEY, JSON.stringify(ok)); } catch (e) {}
+      }
+      function ensureTextPrivacy(cfg, onAllow) {
+        if (textPrivacyAllowed(cfg)) { onAllow(); return; }
+        var host = "";
+        try { host = new URL(cfg.baseUrl).host; } catch (e) { host = cfg.baseUrl; }
+        var old = document.querySelector(".rows-modal-backdrop");
+        if (old) old.remove();
+        var bd = document.createElement("div");
+        bd.className = "rows-modal-backdrop";
+        var modal = document.createElement("div");
+        modal.className = "rows-modal";
+        modal.style.cssText = "max-width:560px";
+        var h = document.createElement("h4");
+        h.textContent = "Send customer text to " + host + "?";
+        var p = document.createElement("p");
+        p.style.cssText = "font-size:.82rem;line-height:1.5;margin:8px 0";
+        p.textContent = "Text analytics sends real call notes / activity comments to your configured AI endpoint. For customer data, a local endpoint (e.g. LM Studio or Ollama at http://localhost:1234/v1) is strongly recommended. Nothing is stored by the tool itself beyond this browser's classification cache.";
+        var lbl = document.createElement("label");
+        lbl.style.cssText = "font-size:.8rem;display:flex;gap:6px;align-items:center;margin:8px 0";
+        var chk = document.createElement("input");
+        chk.type = "checkbox";
+        var span = document.createElement("span");
+        span.textContent = "Don't ask again for this endpoint";
+        lbl.appendChild(chk); lbl.appendChild(span);
+        var row = document.createElement("div");
+        row.style.cssText = "display:flex;gap:8px;justify-content:flex-end";
+        var cancel = document.createElement("button");
+        cancel.type = "button"; cancel.textContent = "Cancel";
+        cancel.addEventListener("click", function () { bd.remove(); });
+        var go = document.createElement("button");
+        go.type = "button"; go.textContent = "Continue";
+        go.className = "primary";
+        go.addEventListener("click", function () { if (chk.checked) rememberTextPrivacy(host); bd.remove(); onAllow(); });
+        row.appendChild(cancel); row.appendChild(go);
+        modal.appendChild(h); modal.appendChild(p); modal.appendChild(lbl); modal.appendChild(row);
+        bd.appendChild(modal);
+        document.body.appendChild(bd);
+        bd.addEventListener("click", function (e) { if (e.target === bd) bd.remove(); });
+      }
+
+      function textColumnsOf(mapping) { return (mapping || []).filter(function (c) { return c.role === "text" && c.type !== "ignore"; }); }
+
+      // One model call for taxonomy / classification (shares the AI panel's settings).
+      function callTextModel(cfg, messages) {
+        return fetch(cfg.baseUrl.replace(/\/+$/, "") + "/chat/completions", {
+          method: "POST",
+          headers: Object.assign({ "Content-Type": "application/json" }, cfg.apiKey ? { Authorization: "Bearer " + cfg.apiKey } : {}),
+          body: JSON.stringify({ model: cfg.model, temperature: cfg.temperature, messages: messages })
+        }).then(function (res) {
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return res.json();
+        }).then(function (json) {
+          return (json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || "";
+        });
+      }
+
+      var TEXT_META_LS_PREFIX = "salesTextInsights:";
+      function saveTextMeta(rec) {
+        if (!rec || !rec.textInsights) return;
+        try {
+          localStorage.setItem(TEXT_META_LS_PREFIX + rec.key, JSON.stringify({
+            colName: rec.textInsights.colName, colIdx: rec.textInsights.colIdx, taxonomy: rec.textInsights.taxonomy, sig: rec.textInsights.sig, locked: true
+          }));
+        } catch (e) {}
+      }
+      function loadTextMeta(rec) {
+        try { return JSON.parse(localStorage.getItem(TEXT_META_LS_PREFIX + rec.key)) || null; } catch (e) { return null; }
+      }
+
+      // Rebuild a dataset's classified results from the text cache after a reload (re-runs cost nothing).
+      function restoreTextInsightsFromCache(rec) {
+        var meta = loadTextMeta(rec);
+        if (!meta) return false;
+        var colIdx = meta.colIdx;
+        var classified = (rec.rowsArr || []).map(function (r) { return Core.TextAnalytics.cachedResult(r[colIdx] != null ? String(r[colIdx]) : "", meta.sig); });
+        var attached = Core.TextAnalytics.attachDerivedColumns(rec.mapping, rec.rowsArr, colIdx, classified);
+        rec.mapping = attached.mapping;
+        var d = Core.TextAnalytics.derivedCols(rec.mapping, meta.colName);
+        rec.textInsights = {
+          colName: meta.colName, colIdx: colIdx, taxonomy: meta.taxonomy, sig: meta.sig, locked: true,
+          classified: true, themeIdx: d.theme, escalationIdx: d.escalation, confidenceIdx: d.confidence, sentimentIdx: d.sentiment
+        };
+        return true;
+      }
+
+      // Build the Ask-the-model payload paths shared by propose/classify (kept out of the DOM).
+      function textModelMessages(cfg, system, user) {
+        return [{ role: "system", content: system }, { role: "user", content: user }];
+      }
+
+      var textClassifyCancelled = false;
+
+      function renderTextInsights() {
+        var el = document.getElementById("textInsightsPanel");
+        if (!el) return;
+        el.textContent = "";
+        var rec = currentChartDataset();
+        if (!rec || !rec.mapping) { el.appendChild(mutedEl("Load a dataset to analyze its text columns.")); return; }
+        var textCols = textColumnsOf(rec.mapping);
+        if (!textCols.length) { el.appendChild(mutedEl("No text column (role “text”) in this dataset — add one via Edit mapping, then reload.")); return; }
+        var ti = rec.textInsights;
+
+        if (ti && ti.locked && ti.classified) {
+          renderTextSummary(el, rec, ti);
+          return;
+        }
+
+        // Column selector.
+        var selRow = document.createElement("div");
+        selRow.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:6px";
+        var colSel = document.createElement("select");
+        colSel.id = "textColSel";
+        textCols.forEach(function (c) {
+          var o = document.createElement("option");
+          o.value = c.idx;
+          o.textContent = c.name + (c.samples && c.samples.length ? " (e.g. “" + c.samples[0] + "”)" : "");
+          if (ti && c.idx === ti.colIdx) o.selected = true;
+          colSel.appendChild(o);
+        });
+        colSel.addEventListener("change", function () {
+          var c = textCols.find(function (x) { return String(x.idx) === colSel.value; });
+          if (c && rec.textInsights && !rec.textInsights.locked) { rec.textInsights.colIdx = c.idx; rec.textInsights.colName = c.name; }
+          renderTextInsights();
+        });
+        var selLab = document.createElement("span");
+        selLab.className = "muted"; selLab.style.cssText = "font-size:.8rem";
+        selLab.textContent = "Text column:";
+        selRow.appendChild(selLab); selRow.appendChild(colSel);
+        el.appendChild(selRow);
+
+        var cfg = loadCfg();
+        var status = document.createElement("div");
+        status.className = "text-status";
+        status.id = "textStatus";
+        el.appendChild(status);
+
+        if (!ti || !ti.taxonomy) {
+          var proposeBtn = document.createElement("button");
+          proposeBtn.type = "button";
+          proposeBtn.textContent = "Propose taxonomy (sample of up to 300 rows)";
+          proposeBtn.id = "textProposeBtn";
+          proposeBtn.addEventListener("click", function () {
+            if (!cfg.baseUrl || !cfg.model) { status.textContent = "Set the AI settings (base URL, key, model) first."; return; }
+            status.textContent = "Privacy check…";
+            ensureTextPrivacy(cfg, function () {
+              var colIdx = parseInt(colSel.value, 10);
+              status.textContent = "Asking the model for a candidate taxonomy…";
+              proposeBtn.disabled = true;
+              var samples = Core.TextAnalytics.sampleTexts(rec.rowsArr, colIdx, 300);
+              callTextModel(cfg, textModelMessages(cfg,
+                "You design clean, non-overlapping taxonomies for customer call notes. Always reply with a single JSON object.",
+                Core.TextAnalytics.buildTaxonomyPrompt(samples))).then(function (content) {
+                var r = Core.TextAnalytics.parseTaxonomy(content);
+                if (r.error) { status.textContent = "Taxonomy proposal failed: " + r.error; proposeBtn.disabled = false; return; }
+                var c = textColumnsOf(rec.mapping).find(function (x) { return x.idx === colIdx; });
+                rec.textInsights = { colName: c ? c.name : ("col" + colIdx), colIdx: colIdx, taxonomy: r.taxonomy, locked: false, classified: false };
+                renderTextInsights();
+              }).catch(function (e) { status.textContent = "Taxonomy request failed: " + e.message; proposeBtn.disabled = false; });
+            });
+          });
+          el.appendChild(proposeBtn);
+          el.appendChild(mutedEl("Pass 1: the model proposes 8–15 categories with definitions and example phrases from a sample. You rename, merge, delete, or add before locking."));
+          return;
+        }
+
+        // Editor for the proposed taxonomy (not yet locked).
+        if (!ti.locked) {
+          var editH = document.createElement("div");
+          editH.style.cssText = "font-weight:600;font-size:.85rem;margin:8px 0 4px";
+          editH.textContent = "Edit taxonomy (rename, merge, delete, add) — then lock it:";
+          el.appendChild(editH);
+          var list = document.createElement("div");
+          list.id = "taxEditor";
+          function rerenderEditor() {
+            list.textContent = "";
+            ti.taxonomy.categories.forEach(function (cat, ci) {
+              var row = document.createElement("div");
+              row.className = "tax-edit-row";
+              var n = document.createElement("input");
+              n.value = cat.name; n.placeholder = "name";
+              n.addEventListener("input", function () { cat.name = this.value; });
+              var d = document.createElement("input");
+              d.value = cat.definition; d.placeholder = "definition";
+              d.addEventListener("input", function () { cat.definition = this.value; });
+              var e = document.createElement("input");
+              e.value = (cat.examples || []).join(" | "); e.placeholder = "examples (| separated)";
+              e.addEventListener("input", function () { cat.examples = this.value.split("|").map(function (s) { return s.trim(); }).filter(Boolean); });
+              var del = document.createElement("button");
+              del.type = "button"; del.textContent = "✕";
+              del.addEventListener("click", function () { ti.taxonomy.categories.splice(ci, 1); rerenderEditor(); });
+              row.appendChild(n); row.appendChild(d); row.appendChild(e); row.appendChild(del);
+              list.appendChild(row);
+            });
+            var add = document.createElement("button");
+            add.type = "button"; add.textContent = "+ Add category";
+            add.addEventListener("click", function () { ti.taxonomy.categories.push({ name: "", definition: "", examples: [] }); rerenderEditor(); });
+            list.appendChild(add);
+          }
+          rerenderEditor();
+          el.appendChild(list);
+          var lockRow = document.createElement("div");
+          lockRow.style.cssText = "display:flex;gap:8px;align-items:center;margin-top:8px";
+          var lockBtn = document.createElement("button");
+          lockBtn.type = "button"; lockBtn.className = "primary"; lockBtn.id = "textLockBtn";
+          lockBtn.textContent = "Lock taxonomy";
+          lockBtn.addEventListener("click", function () {
+            var cats = ti.taxonomy.categories.filter(function (c) { return String(c.name || "").trim(); });
+            if (!cats.length) { status.textContent = "Add at least one named category before locking."; return; }
+            ti.taxonomy.categories = cats;
+            ti.locked = true;
+                        ti.sig = Core.TextAnalytics.taxonomySig(ti.taxonomy);
+                        saveTextMeta(rec);
+                        renderTextInsights();
+                      });
+          lockRow.appendChild(lockBtn);
+          el.appendChild(lockRow);
+          return;
+        }
+
+        // Locked: classify all rows (Pass 2).
+        var lockInfo = document.createElement("div");
+        lockInfo.style.cssText = "font-size:.8rem;margin-bottom:6px";
+        var chips = document.createElement("div");
+        (ti.taxonomy.categories || []).forEach(function (c) {
+          var s = document.createElement("span");
+          s.className = "tax-chip";
+          s.title = c.definition + (c.examples && c.examples.length ? "\nExamples: " + c.examples.join(", ") : "");
+          s.textContent = c.name;
+          chips.appendChild(s);
+        });
+        lockInfo.appendChild(chips);
+        var unlock = document.createElement("button");
+        unlock.type = "button";
+        unlock.textContent = "Edit taxonomy";
+        unlock.style.cssText = "font-size:.72rem;margin-left:6px";
+        unlock.addEventListener("click", function () { ti.locked = false; renderTextInsights(); });
+        lockInfo.appendChild(unlock);
+        el.appendChild(lockInfo);
+
+        var classifyRow = document.createElement("div");
+        classifyRow.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap";
+        var classifyBtn = document.createElement("button");
+        classifyBtn.type = "button"; classifyBtn.className = "primary"; classifyBtn.id = "textClassifyBtn";
+        classifyBtn.textContent = "Classify all rows (" + rec.rowsArr.length + ")";
+        var progress = document.createElement("div");
+        progress.className = "progress"; progress.id = "textProgress";
+        progress.style.cssText = "flex:1;min-width:160px";
+        var fill = document.createElement("div");
+        fill.className = "fill";
+        progress.appendChild(fill);
+        var cancelBtn = document.createElement("button");
+        cancelBtn.type = "button"; cancelBtn.id = "textCancelBtn";
+        cancelBtn.textContent = "Cancel";
+        cancelBtn.style.cssText = "display:none";
+        cancelBtn.addEventListener("click", function () { textClassifyCancelled = true; });
+        classifyRow.appendChild(classifyBtn); classifyRow.appendChild(cancelBtn); classifyRow.appendChild(progress);
+        el.appendChild(classifyRow);
+
+        classifyBtn.addEventListener("click", function () {
+          if (!cfg.baseUrl || !cfg.model) { status.textContent = "Set the AI settings first."; return; }
+          ensureTextPrivacy(cfg, function () { runTextClassification(rec, ti); });
+        });
+      }
+
+      function runTextClassification(rec, ti) {
+        var status = document.getElementById("textStatus");
+        var classifyBtn = document.getElementById("textClassifyBtn");
+        var cancelBtn = document.getElementById("textCancelBtn");
+        var fill = document.querySelector("#textProgress .fill");
+              if (!status || !classifyBtn) {
+                // Called from the summary view (Re-classify): build the controls ad hoc.
+                var el = document.getElementById("textInsightsPanel");
+                if (!el) return;
+                var wrap = document.createElement("div");
+                wrap.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px";
+                status = document.createElement("div");
+                status.className = "text-status";
+                status.id = "textStatus";
+                classifyBtn = document.createElement("button");
+                classifyBtn.type = "button";
+                classifyBtn.className = "primary";
+                classifyBtn.id = "textClassifyBtn";
+                classifyBtn.textContent = "Classify all rows (" + rec.rowsArr.length + ")";
+                cancelBtn = document.createElement("button");
+                cancelBtn.type = "button";
+                cancelBtn.id = "textCancelBtn";
+                cancelBtn.textContent = "Cancel";
+                cancelBtn.style.display = "none";
+                cancelBtn.addEventListener("click", function () { textClassifyCancelled = true; });
+                var p = document.createElement("div");
+                p.className = "progress";
+                p.id = "textProgress";
+                p.style.cssText = "flex:1;min-width:160px";
+                fill = document.createElement("div");
+                fill.className = "fill";
+                p.appendChild(fill);
+                wrap.appendChild(classifyBtn); wrap.appendChild(cancelBtn); wrap.appendChild(p);
+                el.appendChild(wrap);
+                el.appendChild(status);
+              }
+        var cfg = loadCfg();
+        var BATCH = 25;
+        textClassifyCancelled = false;
+        classifyBtn.disabled = true;
+                cancelBtn.style.display = "inline-block";
+        classifyBtn.textContent = "Classifying…";
+        status.textContent = "Classifying rows (batches)…";
+        var rowsArr = rec.rowsArr;
+        var colIdx = ti.colIdx;
+        var batches = [];
+        var cur = [];
+        rowsArr.forEach(function (r, i) {
+          var v = r[colIdx] != null ? String(r[colIdx]).trim() : "";
+          if (!v) return;
+          cur.push({ ri: i, text: v });
+          if (cur.length === BATCH) { batches.push(cur); cur = []; }
+        });
+        if (cur.length) batches.push(cur);
+        var t0 = Date.now(), done = 0;
+        function progressUI() {
+          var totalN = batches.reduce(function (s, b) { return s + b.length; }, 0);
+          var pct = totalN ? Math.round((done / totalN) * 100) : 100;
+          if (fill) fill.style.width = pct + "%";
+          var elapsed = (Date.now() - t0) / 1000;
+          var eta = done ? Math.round((elapsed / done) * (totalN - done)) : null;
+          status.textContent = (done >= totalN ? "Done." : "Classified " + done + " of " + totalN + " texts" + (eta != null ? " · ~" + eta + "s remaining" : "")) + (textClassifyCancelled ? " — cancelled." : "");
+        }
+        function classifyBatch(batch) {
+          if (textClassifyCancelled) return Promise.resolve();
+          var uncached = batch.filter(function (it) { return !Core.TextAnalytics.cachedResult(it.text, ti.sig); });
+          if (!uncached.length) { done += batch.length; progressUI(); return Promise.resolve(); }
+          var texts = uncached.map(function (it) { return it.text; });
+          var msgs = textModelMessages(cfg,
+            "You classify customer call notes into a locked taxonomy. Use ONLY the taxonomy category names. Reply with ONE JSON array matching the input order.",
+            Core.TextAnalytics.buildClassifyPrompt(ti.taxonomy, texts));
+          function attempt(retry) {
+            return callTextModel(cfg, msgs.concat(retry ? [{ role: "user", content: "One or more rows used a category outside the taxonomy or broke the schema. Reply again with the SAME JSON array shape, using ONLY the taxonomy names above." }] : [])).then(function (content) {
+              var r = Core.TextAnalytics.parseClassification(content, ti.taxonomy);
+              if (r.error) {
+                if (!retry) return attempt(true); // reject and retry once
+                throw new Error(r.error);
+              }
+              r.rows.forEach(function (row, j) { Core.TextAnalytics.cacheResult(texts[j], ti.sig, row); });
+            });
+          }
+          return attempt(false).then(function () { done += batch.length; progressUI(); });
+        }
+        var chain = Promise.resolve();
+        batches.forEach(function (b) { chain = chain.then(function () { return classifyBatch(b); }); });
+        chain.then(function () {
+          if (textClassifyCancelled) { status.textContent = "Classification cancelled — partial results were kept and cached."; }
+          else { status.textContent = ""; }
+          finishTextClassification(rec, ti);
+        }).catch(function (e) {
+          status.textContent = "Classification failed: " + e.message + " — retry.";
+          if (fill) fill.style.width = "0%";
+        }).then(function () {
+          classifyBtn.disabled = false;
+          classifyBtn.textContent = "Classify all rows (" + rowsArr.length + ")";
+          cancelBtn.style.display = "none";
+        });
+      }
+
+      function finishTextClassification(rec, ti) {
+        // Rebuild per-row results from the cache (the cache is the source of truth for classified rows).
+        var classified = (rec.rowsArr || []).map(function (r) { return Core.TextAnalytics.cachedResult(r[ti.colIdx] != null ? String(r[ti.colIdx]) : "", ti.sig); });
+        var attached = Core.TextAnalytics.attachDerivedColumns(rec.mapping, rec.rowsArr, ti.colIdx, classified);
+        rec.mapping = attached.mapping;
+        var d = Core.TextAnalytics.derivedCols(rec.mapping, ti.colName);
+        ti.classified = true;
+        ti.themeIdx = d.theme; ti.escalationIdx = d.escalation; ti.confidenceIdx = d.confidence; ti.sentimentIdx = d.sentiment;
+              // Expose theme options (from the derived column) so the sidebar Theme filter appears.
+              var themes = [];
+              var seen = {};
+              (rec.rowsArr || []).forEach(function (r) {
+                var t = String(r[d.theme] == null ? "" : r[d.theme]).trim();
+                if (t && !seen[t]) { seen[t] = true; themes.push(t); }
+              });
+              store.update({ themes: themes.sort(), selectedThemes: themes.slice() });
+              saveTextMeta(rec);
+              renderTextInsights();
+              buildFilters();
+              renderAll();
+            }
+
+      function renderTextSummary(el, rec, ti) {
+        var st = Core.TextAnalytics.themeStats(rec.rowsArr, ti.themeIdx, ti.escalationIdx, ti.confidenceIdx);
+        var h = document.createElement("div");
+        h.style.cssText = "font-weight:600;font-size:.85rem;margin:4px 0 2px";
+        h.textContent = "Themes (" + ti.colName + ") — " + st.total + " texts classified";
+        el.appendChild(h);
+        var honesty = document.createElement("div");
+        honesty.className = "muted";
+        honesty.style.cssText = "font-size:.76rem;margin-bottom:4px";
+        honesty.textContent = "Escalations: " + st.escalationCount + " · low-confidence (<0.5): " + st.lowConfidenceCount + " · " + ((st.themes.find(function (t) { return t.name === "(unclassified)"; }) || {}).count || 0) + " unclassified (not forced into a bucket).";
+        el.appendChild(honesty);
+        var listDiv = document.createElement("div");
+        listDiv.className = "theme-list";
+        st.themes.forEach(function (t) {
+          var row = document.createElement("div");
+          row.className = "theme-row";
+          var name = document.createElement("span");
+          name.style.cssText = "font-weight:600";
+          name.textContent = t.name;
+          var cnt = document.createElement("span");
+          cnt.className = "theme-count";
+          cnt.textContent = t.count;
+          var btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = "view rows";
+          btn.style.cssText = "font-size:.72rem";
+          btn.addEventListener("click", function () {
+            var rows = [];
+            (rec.rowsArr || []).forEach(function (r, i) {
+              if (t.name === "(unclassified)") {
+                var val = ti.themeIdx != null && ti.themeIdx < r.length ? String(r[ti.themeIdx] == null ? "" : r[ti.themeIdx]).trim() : "";
+                if (val !== "") return;
+              } else if (String(r[ti.themeIdx]) !== t.name) return;
+              var text = ti.colIdx < r.length ? String(r[ti.colIdx] == null ? "" : r[ti.colIdx]) : "";
+              rows.push({ "Row": i + 1, "Text": text, "Confidence": ti.confidenceIdx != null && ti.confidenceIdx < r.length ? r[ti.confidenceIdx] : null, "Escalation": ti.escalationIdx != null && ti.escalationIdx < r.length ? r[ti.escalationIdx] : "" });
+            });
+            showRowsModal(rows, "Verbatim rows — " + t.name);
+          });
+          row.appendChild(name); row.appendChild(cnt); row.appendChild(btn);
+          listDiv.appendChild(row);
+        });
+        el.appendChild(listDiv);
+        var prov = document.createElement("div");
+        prov.className = "prov";
+        prov.textContent = "Taxonomy locked · results cached by text hash (re-runs cost nothing) · derived columns: Sentiment (measure), Theme, SentimentLabel, Escalation, Confidence — filterable in the sidebar and chartable in Spec-driven charts.";
+        el.appendChild(prov);
+        var edit = document.createElement("button");
+        edit.type = "button";
+        edit.textContent = "Re-run with a new taxonomy";
+        edit.style.cssText = "font-size:.75rem;margin-top:6px";
+        edit.addEventListener("click", function () {
+                  rec.textInsights = { colName: ti.colName, colIdx: ti.colIdx, taxonomy: ti.taxonomy, locked: false, classified: false };
+                  renderTextInsights();
+                });
+        el.appendChild(edit);
+                var reBtn = document.createElement("button");
+                reBtn.type = "button";
+                reBtn.id = "textReclassifyBtn";
+                reBtn.textContent = "Re-classify all rows (re-uses the cache — no duplicate model calls)";
+                reBtn.style.cssText = "font-size:.75rem;margin-top:6px;margin-left:8px";
+                reBtn.addEventListener("click", function () { runTextClassification(rec, ti); });
+                el.appendChild(reBtn);
+              }
+
+      function mutedEl(text) {
+        var m = document.createElement("div");
+        m.className = "muted";
+        m.style.cssText = "font-size:.8rem";
+        m.textContent = text;
+        return m;
+      }
       // ---- Phase 3: dataset tabs / switcher + overview + global filter bus + join proposals ----
       function renderTabs() {
         var el = document.getElementById("dsTabs");
@@ -2754,26 +3461,32 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         var prodI = prodCol ? Core.Joins.colIdx(map, prodCol) : -1;
         var geoI = geoCol ? Core.Joins.colIdx(map, geoCol) : -1;
         var timeI = timeCol ? Core.Joins.colIdx(map, timeCol) : -1;
-        var timeFmt = null;
-        for (var i = 0; i < map.length; i++) if (map[i].name === timeCol && map[i].format) timeFmt = map[i].format;
-        if (prodNarrow && prodI < 0) notes.push("no 'product' column — product filter does not reach this dataset");
-        if (ctryNarrow && geoI < 0) notes.push("no 'country' column — country filter does not reach this dataset");
-        if (haveDate && timeI < 0) notes.push("no 'time' column — not date-filtered");
-        var rows = (rec.rowsArr || []).filter(function (r) {
-          if (prodNarrow && prodI >= 0) { var pv = r[prodI]; if (pv == null || !prods.has(String(pv).trim())) return false; }
-          if (ctryNarrow && geoI >= 0) { var gv = r[geoI]; if (gv == null || !countries.has(String(gv).trim().toUpperCase())) return false; }
-          if (haveDate && timeI >= 0) {
-            var tv = r[timeI];
-            if (tv == null || String(tv).trim() === "") return false;
-            var tms = Core.parseDateByFormat(tv, timeFmt);
-            if (!tms) return false;
-            if (range[0] != null && tms.getTime() < range[0]) return false;
-            if (range[1] != null && tms.getTime() > range[1]) return false;
-          }
-          return true;
-        });
-        return { rows: rows, notes: notes };
-      }
+              // Phase 8: derived theme filter from text analytics (raw-row path).
+              var themes = store.get("selectedThemes") || [];
+              var themeNarrow = (themes.length > 0 && themes.length < (store.get("themes") || []).length) && rec.textInsights && rec.textInsights.themeIdx != null;
+              var themeSet = new Set(themes);
+              var timeFmt = null;
+              for (var i = 0; i < map.length; i++) if (map[i].name === timeCol && map[i].format) timeFmt = map[i].format;
+              if (prodNarrow && prodI < 0) notes.push("no 'product' column — product filter does not reach this dataset");
+              if (ctryNarrow && geoI < 0) notes.push("no 'country' column — country filter does not reach this dataset");
+              if (haveDate && timeI < 0) notes.push("no 'time' column — not date-filtered");
+              if (themeNarrow) notes.push("theme filter applies (" + themes.length + " of " + (store.get("themes") || []).length + " themes)");
+              var rows = (rec.rowsArr || []).filter(function (r) {
+                if (prodNarrow && prodI >= 0) { var pv = r[prodI]; if (pv == null || !prods.has(String(pv).trim())) return false; }
+                if (ctryNarrow && geoI >= 0) { var gv = r[geoI]; if (gv == null || !countries.has(String(gv).trim().toUpperCase())) return false; }
+                if (themeNarrow) { var tv = r[rec.textInsights.themeIdx]; if (tv == null || !themeSet.has(String(tv).trim())) return false; }
+                if (haveDate && timeI >= 0) {
+                  var tv2 = r[timeI];
+                  if (tv2 == null || String(tv2).trim() === "") return false;
+                  var tms = Core.parseDateByFormat(tv2, timeFmt);
+                  if (!tms) return false;
+                  if (range[0] != null && tms.getTime() < range[0]) return false;
+                  if (range[1] != null && tms.getTime() > range[1]) return false;
+                }
+                return true;
+              });
+              return { rows: rows, notes: notes };
+            }
 
       function showOverview() {
         view = "overview";
@@ -3202,14 +3915,34 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         label.appendChild(document.createTextNode(" " + c));
         cl.appendChild(label);
       });
-    }
+          // Phase 8: Theme filter — from derived text-analytics columns on the active dataset.
+          var tg = document.getElementById("themeFilterGroup");
+          var tl = document.getElementById("themeChecklist");
+          tl.innerHTML = "";
+          var themes = store.get("themes") || [];
+          var activeHasThemes = !!currentChartDataset() && !!currentChartDataset().textInsights && currentChartDataset().textInsights.themeIdx != null;
+          tg.style.display = themes.length && activeHasThemes ? "block" : "none";
+          themes.forEach(function (t) {
+            var label = document.createElement("label");
+            var cb = document.createElement("input");
+            cb.type = "checkbox";
+            cb.value = t;
+            cb.checked = store.get("selectedThemes").indexOf(t) !== -1;
+            cb.dataset.kind = "theme";
+            cb.addEventListener("change", onFilterChange);
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(" " + t));
+            tl.appendChild(label);
+          });
+        }
 
   function syncChecklistState() { // mirror checkbox state into the store (single source of truth)
-    var prods = [], ctrys = [];
+      var prods = [], ctrys = [], themes = [];
     document.querySelectorAll("#productList input").forEach(function (i) { if (i.checked) prods.push(i.value); });
     document.querySelectorAll("#countryChecklist input").forEach(function (i) { if (i.checked) ctrys.push(i.value); });
-    store.update({ selectedProducts: prods, selectedCountries: ctrys });
-  }
+      document.querySelectorAll("#themeChecklist input").forEach(function (i) { if (i.checked) themes.push(i.value); });
+      store.update({ selectedProducts: prods, selectedCountries: ctrys, selectedThemes: themes });
+    }
 
   function onFilterChange() { syncChecklistState(); renderAll(); }
 
@@ -3222,15 +3955,24 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     var countries = new Set(store.get("selectedCountries"));
     var range = dateRange();
     return store.get("allRows").filter(function (r) {
-      if (!prods.has(r.articleId) || !countries.has(r.countryCode)) return false;
-        if (range[0] == null && range[1] == null) return true; // keep rows even without dates when no range is active
-        if (!r.date) return false; // an active date range excludes rows with unknown dates
-        var t = r.date.getTime();
-        if (range[0] != null && t < range[0]) return false;
-        if (range[1] != null && t > range[1]) return false;
-        return true;
-      });
-    }
+        // Phase 8: derived theme filter on the object-row path — matched through the raw row index.
+        var themes = store.get("selectedThemes") || [];
+        var rec = currentChartDataset();
+        if (themes.length && themes.length < (store.get("themes") || []).length && rec && rec.textInsights && rec.textInsights.themeIdx != null) {
+          var themeSet = new Set(themes);
+          if (r._ri == null || r._ri >= (rec.rowsArr || []).length) return false;
+          var tv = rec.rowsArr[r._ri][rec.textInsights.themeIdx];
+          if (tv == null || !themeSet.has(String(tv).trim())) return false;
+        }
+        if (!prods.has(r.articleId) || !countries.has(r.countryCode)) return false;
+          if (range[0] == null && range[1] == null) return true; // keep rows even without dates when no range is active
+          if (!r.date) return false; // an active date range excludes rows with unknown dates
+          var t = r.date.getTime();
+          if (range[0] != null && t < range[0]) return false;
+          if (range[1] != null && t > range[1]) return false;
+          return true;
+        });
+      }
 
   // ---- CSV export of the current filtered view (client-side download only) ----
   function exportCsv() {
@@ -3253,9 +3995,11 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     // Phase 7 helpers: provenance lines and "show the math" panels (source data is the authority).
     function filterStateText() {
       var range = dateRange();
-      return store.get("selectedProducts").length + " products · " + store.get("selectedCountries").length + " countries · " +
-        "date " + (range[0] == null ? "all" : new Date(range[0]).toISOString().slice(0, 10)) + " → " + (range[1] == null ? "all" : new Date(range[1]).toISOString().slice(0, 10));
-    }
+          var themes = store.get("selectedThemes") || [];
+          return store.get("selectedProducts").length + " products · " + store.get("selectedCountries").length + " countries · " +
+            (themes.length && themes.length < (store.get("themes") || []).length ? themes.length + " themes (" + themes.join(", ") + ") · " : "") +
+            "date " + (range[0] == null ? "all" : new Date(range[0]).toISOString().slice(0, 10)) + " → " + (range[1] == null ? "all" : new Date(range[1]).toISOString().slice(0, 10));
+        }
     function provFor(rec, rows, extra) {
       var parts = [];
       if (rec) {
@@ -3439,8 +4183,9 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
   function filterKey() { // order-independent so re-checking the same set doesn't reset context
     var range = dateRange();
-    return Core.AI.filterKey(store.get("selectedProducts"), store.get("selectedCountries"), store.get("aggMode"), range[0], range[1]);
-  }
+      var t = (store.get("selectedThemes") || []).slice().sort();
+      return Core.AI.filterKey(store.get("selectedProducts"), store.get("selectedCountries"), store.get("aggMode"), range[0], range[1]) + "|themes:" + t.join(",");
+    }
 
   function renderMd(text) {
     // All markdown output passes through the sanitizer before insertion (no raw model HTML).
@@ -3587,7 +4332,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   function buildToolContext() {
     return {
       datasets: datasets.filter(function (d) { return d.hasData; }).map(function (d) {
-        return { id: d.id, name: d.name, kind: d.kind, rowCount: (d.rowsArr || []).length, hasData: true, mapping: d.mapping, rowsArr: d.rowsArr };
+        return { id: d.id, name: d.name, kind: d.kind, rowCount: (d.rowsArr || []).length, hasData: true, mapping: d.mapping, rowsArr: d.rowsArr, textInsights: d.textInsights || null };
       }),
       createChart: function (spec) {
         var id = "c" + Date.now().toString(36);
@@ -3728,15 +4473,16 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     resetFilters: function () {
       document.querySelectorAll("#productList input").forEach(function (i) { i.checked = true; });
       document.querySelectorAll("#countryChecklist input").forEach(function (i) { i.checked = true; });
-      document.querySelector('input[name="agg"][value="day"]').checked = true;
-      store.set("aggMode", "day");
-      document.getElementById("dateFrom").value = "";
-      document.getElementById("dateTo").value = "";
-      var range = readDateRange();
-      store.update({ dateFromMs: range[0], dateToMs: range[1] });
-      syncChecklistState();
-      renderAll();
-    }
+          document.querySelectorAll("#themeChecklist input").forEach(function (i) { i.checked = true; });
+          document.querySelector('input[name="agg"][value="day"]').checked = true;
+          store.set("aggMode", "day");
+          document.getElementById("dateFrom").value = "";
+          document.getElementById("dateTo").value = "";
+          var range = readDateRange();
+          store.update({ dateFromMs: range[0], dateToMs: range[1] });
+          syncChecklistState();
+          renderAll();
+        }
   };
 
   var fileInput = document.getElementById("fileInput");
@@ -3777,6 +4523,16 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
           syncChecklistState();
           renderAll();
         });
+                document.getElementById("themeAllBtn").addEventListener("click", function () {
+                  document.querySelectorAll("#themeChecklist input").forEach(function (i) { i.checked = true; });
+                  syncChecklistState();
+                  renderAll();
+                });
+                document.getElementById("themeNoneBtn").addEventListener("click", function () {
+                  document.querySelectorAll("#themeChecklist input").forEach(function (i) { i.checked = false; });
+                  syncChecklistState();
+                  renderAll();
+                });
         // Product search: filter the visible checklist as you type (checkbox state is untouched).
         document.getElementById("productSearch").addEventListener("input", applyProductSearch);
   ["optRegression", "optMovingAvg"].forEach(function (id) { document.getElementById(id).addEventListener("change", renderAll); });

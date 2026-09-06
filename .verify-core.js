@@ -58,6 +58,91 @@ const d1 = Core.Verify.getDefinition("totalUnits");
 const d2 = Core.Verify.getDefinition("winRate");
 if (!d1 || !/sum/i.test(d1.definition) || !d2 || !/won/.test(d2.definition)) { console.error("FAIL 7.6: definition registry", JSON.stringify({ d1, d2 })); process.exit(1); }
 console.log("phase 7.6 definition registry: ok");
+
+// ---------------------------------------------------------------------------
+// Phase 8: text analytics — two-pass taxonomy, strict per-row schema, cache by
+// text hash, derived columns, honest low-confidence/unclassified reporting.
+// ---------------------------------------------------------------------------
+const TA = Core.TextAnalytics;
+const h1 = TA.textHash("Customer happy with pricing");
+const h2 = TA.textHash("Complained about late delivery");
+if (h1 !== h2 && h1.length === 8 && h1 === TA.textHash("Customer happy with pricing")) { console.log("phase 8.1 textHash: ok"); }
+else { console.error("FAIL 8.1: textHash must be stable + distinct", h1, h2); process.exit(1); }
+
+const taxReply = JSON.stringify({ categories: [
+  { name: "Positive feedback", definition: "Praise or satisfaction.", examples: ["happy with", "great service"] },
+  { name: "Complaint", definition: "A problem or issue.", examples: ["late delivery", "broken"] },
+  { name: "Question", definition: "Asks for information.", examples: ["how do I", "can you"] }
+] });
+const parsedTax = TA.parseTaxonomy("Here you go:\n```json\n" + taxReply + "\n```");
+if (parsedTax.error || parsedTax.taxonomy.categories.length !== 3 || parsedTax.taxonomy.categories[1].name !== "Complaint") { console.error("FAIL 8.2: parseTaxonomy", JSON.stringify(parsedTax)); process.exit(1); }
+if (!TA.parseTaxonomy("no json here").error) { console.error("FAIL 8.2: parseTaxonomy must error on non-JSON"); process.exit(1); }
+console.log("phase 8.2 parseTaxonomy: ok");
+
+const texts = ["Customer happy with pricing", "Complained about late delivery"];
+const prompt2 = TA.buildClassifyPrompt(parsedTax.taxonomy, texts);
+if (!prompt2.includes("Complaint") || !prompt2.includes("sentiment") || !prompt2.includes("escalationFlag")) { console.error("FAIL 8.3: buildClassifyPrompt must carry the locked taxonomy + strict schema"); process.exit(1); }
+const goodReply = JSON.stringify([
+  { sentiment: 0.8, sentimentLabel: "positive", categories: ["Positive feedback"], keyPhrases: ["happy"], escalationFlag: false, confidence: 0.9 },
+  { sentiment: -0.7, sentimentLabel: "negative", categories: ["Complaint"], keyPhrases: ["late"], escalationFlag: true, confidence: 0.8 }
+]);
+const pc = TA.parseClassification(goodReply, parsedTax.taxonomy);
+if (pc.error || pc.rows.length !== 2 || pc.rows[1].escalationFlag !== true || pc.rows[0].sentiment !== 0.8) { console.error("FAIL 8.3: parseClassification valid rows", JSON.stringify(pc)); process.exit(1); }
+const offTax = JSON.stringify([
+  { sentiment: 0.1, sentimentLabel: "neutral", categories: ["NotARealCategory"], keyPhrases: [], escalationFlag: false, confidence: 0.5 }
+]);
+const pcBad = TA.parseClassification(offTax, parsedTax.taxonomy);
+if (!pcBad.error || !/outside the taxonomy/.test(pcBad.error)) { console.error("FAIL 8.3: off-taxonomy category must be rejected", JSON.stringify(pcBad)); process.exit(1); }
+const pcSchema = TA.parseClassification(JSON.stringify([{ sentiment: 2, sentimentLabel: "x", categories: [], keyPhrases: [], escalationFlag: false, confidence: 0.5 }]), parsedTax.taxonomy);
+if (!pcSchema.error) { console.error("FAIL 8.3: sentiment out of range must be rejected"); process.exit(1); }
+console.log("phase 8.3 strict classification + off-taxonomy rejection: ok");
+
+// Cache by hash of the text + taxonomy signature; re-runs cost nothing; a changed taxonomy misses.
+const sig = TA.taxonomySig(parsedTax.taxonomy);
+const cls = { sentiment: 0.8, sentimentLabel: "positive", categories: ["Positive feedback"], keyPhrases: [], escalationFlag: false, confidence: 0.9 };
+TA.cacheResult(texts[0], sig, cls);
+const hit = TA.cachedResult(texts[0], sig);
+if (!hit || hit.sentiment !== 0.8) { console.error("FAIL 8.4: cached result must come back", JSON.stringify(hit)); process.exit(1); }
+const sig2 = TA.taxonomySig({ categories: [{ name: "Different", definition: "x", examples: [] }] });
+if (TA.cachedResult(texts[0], sig2)) { console.error("FAIL 8.4: different taxonomy must invalidate the cache"); process.exit(1); }
+console.log("phase 8.4 text cache (hash + taxonomy sig): ok");
+
+// Derived columns: sentiment/theme become ordinary mapped columns on the dataset.
+const tRows = [["2024-01-05", "happy with pricing"], ["2024-01-06", "late delivery"], ["2024-01-07", ""]];
+const tMap = [{ name: "Date", type: "date", role: "time", idx: 0 }, { name: "Notes", type: "text", role: "text", idx: 1 }];
+const classified = [
+  { sentiment: 0.9, sentimentLabel: "positive", categories: ["Positive feedback"], keyPhrases: [], escalationFlag: false, confidence: 0.9 },
+  { sentiment: -0.6, sentimentLabel: "negative", categories: ["Complaint"], keyPhrases: [], escalationFlag: true, confidence: 0.99 },
+  null // unclassified row — must stay blank, not forced
+];
+const att = TA.attachDerivedColumns(tMap, tRows, 1, classified);
+const names = att.mapping.map(c => c.name);
+if (!names.includes("Notes·Sentiment") || !names.includes("Notes·Theme") || !names.includes("Notes·Escalation")) { console.error("FAIL 8.5: derived columns missing", JSON.stringify(names)); process.exit(1); }
+const themeIdx = att.mapping.find(c => c.name === "Notes·Theme").idx;
+const sentIdx = att.mapping.find(c => c.name === "Notes·Sentiment").idx;
+const escIdx = att.mapping.find(c => c.name === "Notes·Escalation").idx;
+const confIdx = att.mapping.find(c => c.name === "Notes·Confidence").idx;
+if (tRows[0][themeIdx] !== "Positive feedback" || tRows[1][sentIdx] !== -0.6 || tRows[1][escIdx] !== "yes" || tRows[2][themeIdx] !== "" || tRows[2][sentIdx] !== null) { console.error("FAIL 8.5: derived values not written", JSON.stringify(tRows)); process.exit(1); }
+// Chartable through the normal engine: "Theme"/"Sentiment" resolve and group.
+const themeCol = Core.Charts.fieldColumn(att.mapping, "Theme");
+const sentCol = Core.Charts.fieldColumn(att.mapping, "Sentiment");
+if (!themeCol || !sentCol || Core.Metrics.columnIndex(att.mapping, "Sentiment") < 0) { console.error("FAIL 8.5: derived columns must resolve for charts", JSON.stringify({ themeCol, sentCol })); process.exit(1); }
+const specByTheme = Core.Charts.buildSeries({ type: "bar", x: { field: "Theme" }, y: [{ field: "Sentiment", agg: "avg" }] }, tRows, att.mapping, {});
+if (!specByTheme.labels.length || specByTheme.labels.indexOf("Positive feedback") === -1) { console.error("FAIL 8.5: buildSeries must group by the derived Theme", JSON.stringify(specByTheme.labels)); process.exit(1); }
+console.log("phase 8.5 derived columns + chartable via normal engine: ok");
+
+const taStats = TA.themeStats(tRows, themeIdx, escIdx, confIdx);
+if (taStats.themes.find(t => t.name === "Positive feedback").count !== 1 || taStats.themes.find(t => t.name === "(unclassified)").count !== 1 || taStats.escalationCount !== 1 || taStats.lowConfidenceCount !== 0) { console.error("FAIL 8.6: themeStats", JSON.stringify(taStats)); process.exit(1); }
+console.log("phase 8.6 themeStats + honest unclassified: ok");
+
+// extract_text_insights is deterministic: helpful error without a pipeline; summary with one.
+const dsNoPipe = { id: "d1", name: "t", mapping: tMap, rowsArr: tRows };
+const rNoPipe = Core.Tools.runTool("extract_text_insights", { field: "Notes" }, { datasets: [dsNoPipe] });
+if (!rNoPipe.note || !/UI/.test(rNoPipe.note)) { console.error("FAIL 8.7: extract_text_insights without pipeline", JSON.stringify(rNoPipe)); process.exit(1); }
+const dsPipe = Object.assign({}, dsNoPipe, { mapping: att.mapping, textInsights: { locked: true, classified: true, colIdx: 1, themeIdx: themeIdx, escalationIdx: escIdx, confidenceIdx: confIdx, taxonomy: parsedTax.taxonomy } });
+const rPipe = Core.Tools.runTool("extract_text_insights", { field: "Notes" }, { datasets: [dsPipe] });
+if (!rPipe.resultId || !rPipe.taxonomy || rPipe.taxonomy.length !== 3 || !rPipe.themes || rPipe.themes.length !== 3 || rPipe.themes.find(t => t.name === "Complaint").count !== 1 || rPipe.themes.find(t => t.name === "(unclassified)").count !== 1) { console.error("FAIL 8.7: extract_text_insights summary", JSON.stringify(rPipe)); process.exit(1); }
+console.log("phase 8.7 extract_text_insights deterministic: ok");
 // ---------------------------------------------------------------------------
 
 // 1. Parse + validate
