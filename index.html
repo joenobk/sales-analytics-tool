@@ -104,6 +104,8 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   button.primary:hover { background: #0284c7; }
   .layout { display: grid; grid-template-columns: 250px 1fr; gap: 16px; padding: 16px 20px; flex: 1; align-items: start; }
   aside.sidebar { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; position: sticky; top: 16px; }
+  body.sidebar-collapsed .layout { grid-template-columns: 1fr; }
+  body.sidebar-collapsed aside.sidebar { display: none; }
   .filter-group { margin-bottom: 18px; }
   .filter-group h3 { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 8px; }
   select, input[type=text], input[type=password], textarea { width: 100%; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 7px 9px; font-size: .85rem; }
@@ -187,6 +189,23 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   .theme-row { display: flex; align-items: center; gap: 8px; font-size: .8rem; }
   .theme-count { min-width: 34px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
   .text-status { font-size: .78rem; color: var(--muted); margin: 4px 0; }
+  /* Phase 9: severity + visual clarity */
+  .attention-strip { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-radius: 10px; font-size: .82rem; background: var(--panel); border: 1px solid var(--border); }
+  .attention-strip.empty { display: none; }
+  .attention-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .attention-item .sev-icon { flex-shrink: 0; font-weight: 700; }
+  .attention-score { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: .75rem; }
+  .kpi-card { position: relative; overflow: hidden; }
+  .kpi-sev { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
+  .kpi-sev-tag { display: inline-flex; align-items: center; gap: 4px; font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  .sparkline-box { height: 26px; margin: 6px 0 2px; }
+  .sparkline-box svg { width: 100%; height: 100%; display: block; }
+  .kpi-delta { font-size: .72rem; font-weight: 600; }
+  .kpi-delta.up { color: #15803d; } .kpi-delta.down { color: #dc2626; } .kpi-delta.flat { color: var(--muted); }
+  .kpi-conf { font-size: .68rem; color: var(--muted); margin-top: 2px; }
+  .conf-low { color: #d97706; } .conf-med { color: #b45309; }
+    .filter-count { margin-left: auto; font-size: .68rem; opacity: .7; }
+  .sidebar-collapsed main { margin-left: 0; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } aside.sidebar { position: static; } }
     .ds-tabs { max-width: 1200px; margin: 14px auto 0; padding: 0 16px; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -202,15 +221,16 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
 <header class="topbar">
   <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 39.7,24.1 59.8,24.9 44.1,38.1 48.9,57.7 32,46.5 15.1,57.7 19.9,38.1 4.2,24.9 24.3,24.1" fill="#f97316"/></svg>
-  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.13 (self-contained)</span></h1>
+  <h1>Sales Data Analytics Tool <span class="muted" style="font-weight:400">v6.14 (self-contained)</span></h1>
   <label class="dropzone" id="dropZone">
       <input type="file" id="fileInput" accept=".csv,text/csv,.xlsx,.xls" multiple hidden>
       <span id="dropLabel">Choose CSV/XLSX — multi-file, one dataset per file (or drag &amp; drop)</span>
   </label>
   <button id="resetBtn" title="Reset all filters">Reset filters</button>
     <button id="themeBtn" type="button" title="Toggle light / dark theme">☾</button>
-    <span class="muted" id="rowCount"></span>
-  </header>
+      <button id="sidebarToggle" type="button" title="Collapse / expand the filter sidebar (F)">Hide filters</button>
+      <span class="muted" id="rowCount"></span>
+    </header>
 
   <div class="ds-tabs" id="dsTabs"></div>
 
@@ -241,8 +261,9 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
           <h3>Countries (multi-select)
             <span class="mini-btns"><button type="button" id="ctryAllBtn" title="Select all countries">All</button><button type="button" id="ctryNoneBtn" title="Deselect all countries">None</button></span>
           </h3>
-          <div class="checklist" id="countryChecklist"><span class="muted">Load a CSV first</span></div>
-        </div>
+                  <input type="text" id="countrySearch" placeholder="Search countries…" autocomplete="off" style="margin-bottom:6px">
+                  <div class="checklist" id="countryChecklist"><span class="muted">Load a CSV first</span></div>
+                </div>
                 <div class="filter-group" id="themeFilterGroup" style="display:none">
                   <h3>Theme (from text analytics)
                     <span class="mini-btns"><button type="button" id="themeAllBtn" title="Select all themes">All</button><button type="button" id="themeNoneBtn" title="Deselect all themes">None</button></span>
@@ -273,24 +294,35 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         </label>
       </div>
     </div>
-  </aside>
 
-  <main>
+        <div class="filter-group">
+          <h3>Saved views</h3>
+          <div style="display:flex;flex-direction:column;gap:6px;font-size:.82rem">
+            <div style="display:flex;gap:4px"><input type="text" id="viewName" placeholder="View name (e.g. Q3 DE review)" style="flex:1;min-width:0"><button type="button" id="saveViewBtn">Save</button></div>
+            <div id="savedViewsList" class="checklist"><span class="muted">Save the current filters + charts to reproduce a view later.</span></div>
+            <div style="display:flex;gap:4px"><button type="button" id="exportViewsBtn">Export JSON</button><button type="button" id="importViewsBtn">Import JSON</button><input type="file" id="viewsImportInput" accept=".json,application/json" hidden></div>
+          </div>
+        </div>
+      </aside>
+
+      <main>
       <div id="overviewPanel"></div>
       <div id="datasetView">
-      <div class="kpi-row">
-              <div class="card kpi-card"><div class="label" id="kpiTotalLabel">Total units</div><div class="value" id="kpiTotal">–</div><button type="button" class="math-btn" data-math="total">Show the math</button><div class="kpi-math" id="kpiMathtotal"></div></div>
-                            <div class="card kpi-card"><div class="label" id="kpiTopLabel">Top product</div><div class="value" id="kpiTop">–</div><div class="sub" id="kpiTopSub"></div><button type="button" class="math-btn" data-math="top">Show the math</button><div class="kpi-math" id="kpiMathtop"></div></div>
-                            <div class="card kpi-card"><div class="label" id="kpiBottomLabel">Bottom product</div><div class="value" id="kpiBottom">–</div><div class="sub" id="kpiBottomSub"></div><button type="button" class="math-btn" data-math="bottom">Show the math</button><div class="kpi-math" id="kpiMathbottom"></div></div>
-                            <div class="card kpi-card"><div class="label" id="kpiTrendLabel">Trend</div><div class="value" id="kpiTrend">–</div><div class="sub" id="kpiTrendSub"></div><button type="button" class="math-btn" data-math="trend">Show the math</button><div class="kpi-math" id="kpiMathtrend"></div></div>
-                            <div class="card kpi-card"><div class="label" id="kpiSeasonLabel">Seasonality</div><div class="value" id="kpiSeason">–</div><div class="sub" id="kpiSeasonSub"></div><button type="button" class="math-btn" data-math="season">Show the math</button><div class="kpi-math" id="kpiMathseason"></div></div>
-      </div>
-            <div class="prov" id="kpiProv"></div>
+        <div id="attentionStrip" class="attention-strip" style="display:none"></div>
+        <div class="kpi-row">
+                <div class="card kpi-card" id="kpiCardTotal"><div class="kpi-sev" id="kpiSevTotal"></div><div class="label" id="kpiTotalLabel">Total units</div><div class="value" id="kpiTotal">–</div><div class="sparkline-box" id="sparkTotal"></div><button type="button" class="math-btn" data-math="total">Show the math</button><div class="kpi-math" id="kpiMathtotal"></div></div>
+                              <div class="card kpi-card" id="kpiCardTop"><div class="kpi-sev" id="kpiSevTop"></div><div class="label" id="kpiTopLabel">Top product</div><div class="value" id="kpiTop">–</div><div class="sub" id="kpiTopSub"></div><div class="sparkline-box" id="sparkTop"></div><button type="button" class="math-btn" data-math="top">Show the math</button><div class="kpi-math" id="kpiMathtop"></div></div>
+                              <div class="card kpi-card" id="kpiCardBottom"><div class="kpi-sev" id="kpiSevBottom"></div><div class="label" id="kpiBottomLabel">Bottom product</div><div class="value" id="kpiBottom">–</div><div class="sub" id="kpiBottomSub"></div><div class="sparkline-box" id="sparkBottom"></div><button type="button" class="math-btn" data-math="bottom">Show the math</button><div class="kpi-math" id="kpiMathbottom"></div></div>
+                              <div class="card kpi-card" id="kpiCardTrend"><div class="kpi-sev" id="kpiSevTrend"></div><div class="label" id="kpiTrendLabel">Trend</div><div class="value" id="kpiTrend">–</div><div class="sub" id="kpiTrendSub"></div><div class="sparkline-box" id="sparkTrend"></div><button type="button" class="math-btn" data-math="trend">Show the math</button><div class="kpi-math" id="kpiMathtrend"></div></div>
+                              <div class="card kpi-card" id="kpiCardSeason"><div class="kpi-sev" id="kpiSevSeason"></div><div class="label" id="kpiSeasonLabel">Seasonality</div><div class="value" id="kpiSeason">–</div><div class="sub" id="kpiSeasonSub"></div><div class="sparkline-box" id="sparkSeason"></div><button type="button" class="math-btn" data-math="season">Show the math</button><div class="kpi-math" id="kpiMathseason"></div></div>
+        </div>
+              <div class="prov" id="kpiProv"></div>
 
       <div class="card">
         <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">Units sold over time<button id="exportCsvBtn" type="button" title="Download the current filtered rows as CSV (stays in your browser)">Export CSV</button></div>
         <div id="chartWrap"><canvas id="mainChart"></canvas></div>
-        <div class="prov" id="mainChartProv"></div>
+                <div class="prov" id="anomalyNote"></div>
+                <div class="prov" id="mainChartProv"></div>
       </div>
 
       <div class="card">
@@ -2330,6 +2362,138 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       return out;
     };
 
+      // ---- Phase 9: importance, hierarchy, and visual clarity ----
+      // Deterministic severity scoring: the ENGINE assigns every KPI a signal score from magnitude of
+      // change, statistical significance (a z-score against the trailing window), and concentration
+      // risk — never the model. Levels: positive, normal, watch, critical.
+      var Severity = {};
+      Severity.LEVELS = ["critical", "watch", "normal", "positive"];
+
+      function mean(values) { var n = values.length; return n ? values.reduce(function (s, v) { return s + v; }, 0) / n : 0; }
+      function stdev(values) {
+        var n = values.length;
+        if (n < 2) return 0;
+        var m = mean(values);
+        var s = values.reduce(function (acc, v) { return acc + (v - m) * (v - m); }, 0);
+        return Math.sqrt(s / (n - 1));
+      }
+      Severity.mean = mean;
+      Severity.stdev = stdev;
+
+      // z-score of `value` against a trailing window of past values (sample stdev; 0 when trivial).
+      function zScore(value, windowValues) {
+        if (value == null) return 0;
+        var sd = stdev(windowValues);
+        if (sd === 0) return 0;
+        return (value - mean(windowValues)) / sd;
+      }
+      Severity.zScore = zScore;
+
+      // Deterministic severity for one KPI:
+      //   magnitudePct - relative change vs the trailing baseline (e.g. 0.25 = +25%)
+      //   z            - how many sigma the current value is from the trailing window
+      //   concentrationRisk - 0..1 (e.g. top-1 share or Herfindahl); raises watch/critical on risk
+      //   isPositiveMeaning - when a positive magnitude is GOOD (e.g. revenue) vs BAD (e.g. complaints)
+      // Returns {score, level, z, magnitudePct, concentration, parts:[...]} — parts explain the level.
+      function severityScore(opts) {
+        opts = opts || {};
+        var mag = opts.magnitudePct != null ? opts.magnitudePct : 0;
+        var z = opts.z != null ? opts.z : 0;
+        var conc = opts.concentration != null ? opts.concentration : 0;
+        var positiveIsGood = opts.positiveIsGood !== false;
+        var score = 0;
+        var parts = [];
+        var absZ = Math.abs(z), absMag = Math.abs(mag);
+        if (absMag >= 0.5) { score += 2; parts.push("magnitude " + (mag >= 0 ? "+" : "") + Math.round(mag * 100) + "%"); }
+        else if (absMag >= 0.25) { score += 1; parts.push("magnitude " + Math.round(mag * 100) + "%"); }
+        if (absZ >= 2) { score += 2; parts.push("z=" + z.toFixed(2)); }
+        else if (absZ >= 1) { score += 1; parts.push("z=" + z.toFixed(2)); }
+        if (conc >= 0.6) { score += 1; parts.push("concentration " + Math.round(conc * 100) + "%"); }
+        // Direction decides positive vs problem: a large move AWAY from the desired direction of the
+        // baseline (i.e. big negative mag when positiveIsGood, or big positive when positiveIsBad).
+        var badDirection = (mag < 0 && positiveIsGood) || (mag > 0 && !positiveIsGood);
+        var level;
+        if (score >= 4 && (badDirection || absMag >= 0.5 || absZ >= 2)) level = "critical";
+        else if (score >= 3 || (badDirection && absMag >= 0.25 && score >= 2)) level = "watch";
+        else if (badDirection && absMag < 0.05 && absZ < 0.5) level = "normal";
+        else if (!badDirection && absMag >= 0.15) level = "positive";
+        else level = "normal";
+        // Concentration risk alone can raise a small but risky figure to watch.
+        if (level === "normal" && conc >= 0.8 && badDirection) level = "watch";
+        return { score: score, level: level, z: z, magnitudePct: mag, concentration: conc, parts: parts };
+      }
+      Severity.severityScore = severityScore;
+
+      // Level -> visual encoding (color + icon + label). The color is NEVER the only cue.
+      Severity.META = {
+        critical: { color: "#dc2626", icon: "▲", label: "Critical" },
+        watch: { color: "#d97706", icon: "◆", label: "Watch" },
+        normal: { color: "#64748b", icon: "•", label: "Normal" },
+        positive: { color: "#15803d", icon: "✓", label: "Positive" }
+      };
+
+      // Sparkline for a KPI card: downsample/scale the series to ≤maxPoints tiny values (0..1).
+      function sparkline(seriesValues, maxPoints) {
+        maxPoints = maxPoints || 40;
+        var v = (seriesValues || []).slice();
+        if (!v.length) return [];
+        var step = Math.ceil(v.length / maxPoints);
+        var out = [];
+        for (var i = 0; i < v.length; i += step) {
+          var chunk = v.slice(i, i + step);
+          out.push(chunk.reduce(function (s, x) { return s + x; }, 0) / chunk.length);
+        }
+        var lo = Math.min.apply(null, out), hi = Math.max.apply(null, out);
+        var span = (hi - lo) || 1;
+        return out.map(function (x) { return (x - lo) / span; });
+      }
+      Severity.sparkline = sparkline;
+
+      // Anomaly markers: points outside 2 sigma of a ROLLING window (previous `window` buckets).
+      // Returns [{index, date, value, z, mean}] — annotated with date + magnitude by the renderer.
+      function anomalies(series, windowN) {
+        windowN = windowN || 12;
+        var out = [];
+        (series || []).forEach(function (pt, i) {
+          if (i < windowN) return;
+          var win = series.slice(Math.max(0, i - windowN), i).map(function (p) { return p.units != null ? p.units : p.value; }).filter(function (x) { return x != null; });
+          if (win.length < 5) return;
+          var v = pt.units != null ? pt.units : pt.value;
+          var z = zScore(v, win);
+          if (Math.abs(z) > 2) out.push({ index: i, label: pt.t != null ? pt.t : i, value: v, z: z });
+        });
+        return out;
+      }
+      Severity.anomalies = anomalies;
+
+      // Confidence + sample-size indicator: a figure resting on few rows must not look like one on many.
+      // Returns e.g. {label:"low", n:3, note:"3 rows — treat cautiously"}.
+      function confidenceLabel(n) {
+        n = n == null ? 0 : n;
+        if (n >= 100) return { label: "high", n: n, note: n.toLocaleString() + " rows — solid" };
+        if (n >= 20) return { label: "medium", n: n, note: n.toLocaleString() + " rows — moderate confidence" };
+        return { label: "low", n: n, note: n.toLocaleString() + " rows — treat cautiously" };
+      }
+      Severity.confidenceLabel = confidenceLabel;
+
+      // Hands-free: score the dashboard KPIs from a computeStats-like object. `past` is the trailing
+      // window of the same KPI (or a default). Concentration comes from top-product share.
+      Severity.scoreKpis = function (stats, pastValues) {
+        pastValues = pastValues || [];
+        function trail(x) { return pastValues.length ? pastValues : [x * 0.98, x, x * 1.02]; }
+        function sig(current, trailArr, positiveIsGood, concentration) {
+          var m = trailArr.length ? (current - mean(trailArr)) / (Math.abs(mean(trailArr)) || 1) : 0;
+          return severityScore({ magnitudePct: m, z: zScore(current, trailArr), concentration: concentration || 0, positiveIsGood: positiveIsGood });
+        }
+        var topShare = stats.topProducts && stats.topProducts.length && stats.total ? stats.topProducts[0][1] / stats.total : 0;
+        return {
+          totalUnits: sig(stats.total, trail(stats.total), true, topShare),
+          topProduct: sig(stats.topProducts && stats.topProducts.length ? stats.topProducts[0][1] : 0, trail(stats.topProducts && stats.topProducts.length ? stats.topProducts[0][1] : 0), true, topShare),
+          trend: severityScore({ magnitudePct: stats.trendPctOfMean || 0, z: 0, positiveIsGood: true }),
+          seasonality: severityScore({ magnitudePct: stats.seasonPeak ? Math.abs(stats.seasonPeak.deviationPct) : 0, z: 0, concentration: 0, positiveIsGood: true })
+        };
+      };
+
   // Deterministic opening profile for a dataset (rendered immediately, never blocks on the model).
   // `rows` are the normalized object rows from the app's filtered view ({date, articleId, countryCode, units}).
   function openProfile(rows, mapping, aggMode) {
@@ -2478,7 +2642,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
   AI.filterKey = filterKey;
 
   // ---- Export all modules + legacy aliases on the core namespace ----
-  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools, Verify: Verify, TextAnalytics: TextAnalytics };
+  var api = { Schema: Schema, Store: Store, Entities: Entities, Datasets: Datasets, Joins: Joins, Metrics: Metrics, Charts: Charts, Insight: Insight, Text: Text, Report: Report, AI: AI, Tools: Tools, Verify: Verify, TextAnalytics: TextAnalytics, Severity: Severity };
   // Legacy top-level aliases (backward compat with existing tests)
   api.normalizeHeader = normalizeHeader;
   api.parseDateValue = parseDateValue;
@@ -3888,53 +4052,87 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     function buildFilters() {
       var pl = document.getElementById("productList");
       pl.innerHTML = "";
-      store.get("products").forEach(function (p) {
-        var label = document.createElement("label");
-        var cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.value = p;
-        cb.checked = true;
-        cb.dataset.kind = "product";
-        cb.addEventListener("change", onFilterChange);
-        label.appendChild(cb);
-        label.appendChild(document.createTextNode(" " + p));
-        pl.appendChild(label);
-      });
-      applyProductSearch();
-      var cl = document.getElementById("countryChecklist");
-      cl.innerHTML = "";
-      store.get("countries").forEach(function (c) {
-        var label = document.createElement("label");
-        var cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.value = c;
-        cb.checked = true;
-        cb.dataset.kind = "country";
-        cb.addEventListener("change", onFilterChange);
-        label.appendChild(cb);
-        label.appendChild(document.createTextNode(" " + c));
-        cl.appendChild(label);
-      });
-          // Phase 8: Theme filter — from derived text-analytics columns on the active dataset.
-          var tg = document.getElementById("themeFilterGroup");
-          var tl = document.getElementById("themeChecklist");
-          tl.innerHTML = "";
-          var themes = store.get("themes") || [];
-          var activeHasThemes = !!currentChartDataset() && !!currentChartDataset().textInsights && currentChartDataset().textInsights.themeIdx != null;
-          tg.style.display = themes.length && activeHasThemes ? "block" : "none";
-          themes.forEach(function (t) {
+          // Phase 9: counts per value so a thousand products stay scannable.
+          var prodCounts = {};
+          (store.get("allRows") || []).forEach(function (r) { prodCounts[r.articleId] = (prodCounts[r.articleId] || 0) + (r.units || 0); });
+          store.get("products").forEach(function (p) {
             var label = document.createElement("label");
             var cb = document.createElement("input");
             cb.type = "checkbox";
-            cb.value = t;
-            cb.checked = store.get("selectedThemes").indexOf(t) !== -1;
-            cb.dataset.kind = "theme";
+            cb.value = p;
+            cb.checked = true;
+            cb.dataset.kind = "product";
             cb.addEventListener("change", onFilterChange);
             label.appendChild(cb);
-            label.appendChild(document.createTextNode(" " + t));
-            tl.appendChild(label);
+            var span = document.createElement("span");
+            span.textContent = p;
+            label.appendChild(span);
+            var cnt = document.createElement("span");
+            cnt.className = "filter-count muted";
+            cnt.textContent = (prodCounts[p] != null ? prodCounts[p].toLocaleString() : "0");
+            label.appendChild(cnt);
+            pl.appendChild(label);
           });
-        }
+          applyProductSearch();
+          var cl = document.getElementById("countryChecklist");
+          cl.innerHTML = "";
+          var ctryCounts = {};
+          (store.get("allRows") || []).forEach(function (r) { ctryCounts[r.countryCode] = (ctryCounts[r.countryCode] || 0) + (r.units || 0); });
+          store.get("countries").forEach(function (c) {
+            var label = document.createElement("label");
+            var cb = document.createElement("input");
+            cb.type = "checkbox";
+            cb.value = c;
+            cb.checked = true;
+            cb.dataset.kind = "country";
+            cb.addEventListener("change", onFilterChange);
+            label.appendChild(cb);
+            var span = document.createElement("span");
+            span.textContent = c;
+            label.appendChild(span);
+            var cnt = document.createElement("span");
+            cnt.className = "filter-count muted";
+            cnt.textContent = (ctryCounts[c] != null ? ctryCounts[c].toLocaleString() : "0");
+            label.appendChild(cnt);
+            cl.appendChild(label);
+          });
+          applyCountrySearch();
+              // Phase 8: Theme filter — from derived text-analytics columns on the active dataset.
+              var tg = document.getElementById("themeFilterGroup");
+              var tl = document.getElementById("themeChecklist");
+              tl.innerHTML = "";
+              var themes = store.get("themes") || [];
+              var activeHasThemes = !!currentChartDataset() && !!currentChartDataset().textInsights && currentChartDataset().textInsights.themeIdx != null;
+              tg.style.display = themes.length && activeHasThemes ? "block" : "none";
+              themes.forEach(function (t) {
+                var label = document.createElement("label");
+                var cb = document.createElement("input");
+                cb.type = "checkbox";
+                cb.value = t;
+                cb.checked = store.get("selectedThemes").indexOf(t) !== -1;
+                cb.dataset.kind = "theme";
+                cb.addEventListener("change", onFilterChange);
+                label.appendChild(cb);
+                var span = document.createElement("span");
+                span.textContent = t;
+                label.appendChild(span);
+                var cnt = document.createElement("span");
+                cnt.className = "filter-count muted";
+                var rec = currentChartDataset();
+                var n = 0;
+                if (rec && rec.textInsights && rec.textInsights.themeIdx != null) (rec.rowsArr || []).forEach(function (r) { if (String(r[rec.textInsights.themeIdx]) === t) n++; });
+                cnt.textContent = n.toLocaleString();
+                label.appendChild(cnt);
+                tl.appendChild(label);
+              });
+            }
+
+      function applyCountrySearch() { // Phase 9: searchable country list (mirror of product search)
+        var q = (document.getElementById("countrySearch").value || "").trim().toLowerCase();
+        document.querySelectorAll("#countryChecklist label").forEach(function (l) {
+          l.style.display = (l.textContent || "").toLowerCase().indexOf(q) >= 0 ? "" : "none";
+        });
+      }
 
   function syncChecklistState() { // mirror checkbox state into the store (single source of truth)
       var prods = [], ctrys = [], themes = [];
@@ -4075,12 +4273,74 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       renderChart(stats.series);
       renderCountries(stats.byCountry);
       renderChartList(); // Phase 5: saved spec-driven charts re-render against the current filters
-      // Phase 7: provenance footers survive filter changes (source is authoritative).
-      var rec = currentChartDataset();
-      provEl("mainChartProv", rec, rows);
-      provEl("countryProv", rec, rows);
-      provEl("kpiProv", rec, rows);
-    }
+          // Phase 9: Attention strip — only critical/watch, sorted by score, hidden when nothing qualifies.
+          renderAttentionStrip();
+          // Phase 7: provenance footers survive filter changes (source is authoritative).
+          var rec = currentChartDataset();
+          provEl("mainChartProv", rec, rows);
+          provEl("countryProv", rec, rows);
+          provEl("kpiProv", rec, rows);
+        }
+
+      // Phase 9: sparkline + delta + severity + confidence on every KPI.
+      function drawSparkline(elId, values) {
+        var el = document.getElementById(elId);
+        if (!el) return;
+        var pts = Core.Severity.sparkline(values, 40);
+        if (!pts.length) { el.innerHTML = ""; return; }
+        var w = 90, h = 26, pad = 2;
+        var path = pts.map(function (p, i) { var x = pad + (i / Math.max(1, pts.length - 1)) * (w - 2 * pad); var y = h - pad - p * (h - 2 * pad); return (i ? "L" : "M") + x.toFixed(1) + " " + y.toFixed(1); }).join(" ");
+        var cs = getComputedStyle(document.documentElement);
+        var color = (cs.getPropertyValue("--accent") || "#38bdf8").trim();
+        el.innerHTML = '<svg viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none"><path d="' + path + '" fill="none" stroke="' + color + '" stroke-width="1.5"/><circle cx="' + (pad + (w - 2 * pad)) + '" cy="' + (h - pad - pts[pts.length - 1] * (h - 2 * pad)).toFixed(1) + '" r="2" fill="' + color + '"/></svg>';
+      }
+      function applyKpiSeverity(cardId, sevId, sev) {
+        var meta = Core.Severity.META[sev.level] || Core.Severity.META.normal;
+        var card = document.getElementById(cardId);
+        var sevEl = document.getElementById(sevId);
+        if (!card || !sevEl) return;
+        card.style.borderLeft = "4px solid " + meta.color;
+        sevEl.innerHTML = '<span class="kpi-sev-tag" style="color:' + meta.color + '">' + meta.icon + " " + meta.label + "</span>";
+      }
+      function deltaArrow(pct) {
+        if (pct == null || !isFinite(pct)) return '<span class="kpi-delta flat">→ flat</span>';
+        if (Math.abs(pct) < 0.01) return '<span class="kpi-delta flat">→ flat</span>';
+        return '<span class="kpi-delta ' + (pct > 0 ? "up" : "down") + '">' + (pct > 0 ? "↗ +" : "↘ ") + (pct * 100).toFixed(1) + "%</span>";
+      }
+      function renderAttentionStrip() {
+        var el = document.getElementById("attentionStrip");
+        if (!el) return;
+        var items = [];
+        var scores = window.__lastSeverity || {};
+        Object.keys(scores).forEach(function (k) {
+          var s = scores[k];
+          if (s && (s.level === "critical" || s.level === "watch")) items.push({ key: k, s: s });
+        });
+        items.sort(function (a, b) { return b.s.score - a.s.score; });
+        if (!items.length) { el.style.display = "none"; el.textContent = ""; return; }
+        el.style.display = "flex";
+        el.textContent = "";
+        var head = document.createElement("div");
+        head.style.cssText = "font-weight:700;font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)";
+        head.textContent = "Attention";
+        el.appendChild(head);
+        items.forEach(function (it) {
+          var meta = Core.Severity.META[it.s.level];
+          var row = document.createElement("div");
+          row.className = "attention-item";
+          var icon = document.createElement("span");
+          icon.className = "sev-icon";
+          icon.style.cssText = "color:" + meta.color;
+          icon.textContent = meta.icon + " " + meta.label;
+          var txt = document.createElement("span");
+          txt.textContent = it.key.replace(/([A-Z])/g, " $1").replace(/^./, function (c) { return c.toUpperCase(); }) + (it.s.parts.length ? " — " + it.s.parts.join(", ") : "");
+          var sc = document.createElement("span");
+          sc.className = "attention-score";
+          sc.textContent = "score " + it.s.score;
+          row.appendChild(icon); row.appendChild(txt); row.appendChild(sc);
+          el.appendChild(row);
+        });
+      }
 
   // Phase 2: group/join on the ID, display the label when one exists (entity registry).
   function displayId(id) {
@@ -4108,12 +4368,42 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
       document.getElementById("kpiSeasonSub").textContent = "month-of-year variation < 5% of daily average";
     }
       // Phase 7: definition registry surfaced on hover + "Show the math" per KPI (filled + toggled via delegation).
-            [["kpiTotalLabel", "totalUnits", "total"], ["kpiTopLabel", "topProduct", "top"], ["kpiBottomLabel", "bottomProduct", "bottom"], ["kpiTrendLabel", "trend", "trend"], ["kpiSeasonLabel", "seasonality", "season"]].forEach(function (t) {
+            [["kpiTotalLabel", "totalUnits", "total", "kpiCardTotal", "kpiSevTotal", "sparkTotal"], ["kpiTopLabel", "topProduct", "top", "kpiCardTop", "kpiSevTop", "sparkTop"], ["kpiBottomLabel", "bottomProduct", "bottom", "kpiCardBottom", "kpiSevBottom", "sparkBottom"], ["kpiTrendLabel", "trend", "trend", "kpiCardTrend", "kpiSevTrend", "sparkTrend"], ["kpiSeasonLabel", "seasonality", "season", "kpiCardSeason", "kpiSevSeason", "sparkSeason"]].forEach(function (t) {
               var def = Core.Verify.getDefinition(t[1]);
               var lab = document.getElementById(t[0]);
               if (lab && def) lab.title = def.definition + " (agg: " + def.agg + ")";
               fillKpiMath(t[2], t[1], rows, t[2] === "total" ? ["Aggregation applied: sum of the measure over " + (rows ? rows.length : 0) + " rows"] : []);
-            });
+                          drawSparkline(t[5], s.series.map(function (b) { return b.units; }));
+                        });
+                        // Phase 9: deterministic severity scoring for every KPI (engine, never the model).
+                        window.__lastSeverity = {};
+                        function sevOf(key, magnitudePct, z, conc, good) {
+                          var sc = Core.Severity.severityScore({ magnitudePct: magnitudePct, z: z, concentration: conc, positiveIsGood: good });
+                          window.__lastSeverity[key] = sc;
+                          return sc;
+                        }
+                        var topShare = s.topProducts && s.topProducts.length && s.total ? s.topProducts[0][1] / s.total : 0;
+                        applyKpiSeverity("kpiCardTotal", "kpiSevTotal", sevOf("totalUnits", s.growthPct != null ? s.growthPct : 0, 0, topShare, true));
+                        applyKpiSeverity("kpiCardTop", "kpiSevTop", sevOf("topProduct", s.growthPct != null ? s.growthPct : 0, 0, topShare, true));
+                        applyKpiSeverity("kpiCardBottom", "kpiSevBottom", sevOf("bottomProduct", s.growthPct != null ? -s.growthPct : 0, 0, topShare, true));
+                        applyKpiSeverity("kpiCardTrend", "kpiSevTrend", sevOf("trend", s.trendPctOfMean || 0, 0, topShare, true));
+                        var seasDev = s.seasonPeak ? Math.abs(s.seasonPeak.deviationPct) : 0;
+                        applyKpiSeverity("kpiCardSeason", "kpiSevSeason", sevOf("seasonality", seasDev, 0, 0, true));
+                        // Delta arrow (growth vs prior period) on the total card.
+                        var totalDelta = document.createElement("div");
+                        totalDelta.innerHTML = deltaArrow(s.growthPct != null ? s.growthPct : null);
+                        var totalCard = document.getElementById("kpiCardTotal");
+                        var existingDelta = totalCard.querySelector(".kpi-delta");
+                        if (existingDelta) existingDelta.outerHTML = totalDelta.innerHTML;
+                        else totalCard.insertBefore(totalDelta, totalCard.querySelector(".sparkline-box").nextSibling);
+                        // Confidence / sample-size: figures resting on few rows must not look like ones on many.
+                        var conf = Core.Severity.confidenceLabel(rows ? rows.length : 0);
+                        var confEl = document.createElement("div");
+                        confEl.className = "kpi-conf " + (conf.label === "low" ? "conf-low" : conf.label === "medium" ? "conf-med" : "");
+                        confEl.textContent = (conf.label === "high" ? "✔ " : "◔ ") + conf.note;
+                        var existingConf = totalCard.querySelector(".kpi-conf");
+                        if (existingConf) existingConf.outerHTML = confEl.outerHTML;
+                        else totalCard.insertBefore(confEl, totalCard.querySelector(".math-btn"));
                   }
 
   // Chart colors follow the active theme (CSS variables) so light/dark both look right.
@@ -4131,26 +4421,43 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
     function renderChart(series) {
       var ctx = document.getElementById("mainChart");
       if (state.chart) state.chart.destroy();
-      // Chart spec built by the Charts module from pure inputs (no DOM reads inside).
-      var spec = Core.Charts.buildLineSpec(series, {
-        regression: document.getElementById("optRegression").checked,
-        movingAvg: document.getElementById("optMovingAvg").checked,
-        maWindow: parseInt(document.getElementById("maWindow").value, 10)
-    });
-      var th = chartTheme();
-      state.chart = new Chart(ctx, {
-        type: "line",
-        data: spec,
-        options: {
-          responsive: true, maintainAspectRatio: false, animation: false,
-          plugins: { legend: { display: spec.datasets.length > 1, labels: { color: th.text } } },
-          scales: {
-            x: { ticks: { color: th.text, maxTicksLimit: 12, autoSkip: true }, grid: { color: th.grid }, title: { display: true, text: store.get("aggMode") === "day" ? "Date (daily)" : "Period (" + store.get("aggMode") + ")" } },
-            y: { beginAtZero: true, ticks: { color: th.text }, grid: { color: th.grid }, title: { display: true, text: "Units sold" } }
+          // Phase 9: anomaly markers — points outside 2σ of a rolling window, annotated with date + magnitude.
+          var ano = Core.Severity.anomalies(series, Math.min(12, Math.max(6, Math.floor(series.length / 4))));
+          var anoNote = document.getElementById("anomalyNote");
+          if (anoNote) {
+            if (!ano.length) anoNote.textContent = "";
+            else anoNote.textContent = "Anomalies (>2σ of rolling window): " + ano.map(function (a) {
+              var lbl = (typeof a.label === "number") ? new Date(a.label).toISOString().slice(0, 10) : String(a.label);
+              return lbl + " (" + a.value.toLocaleString() + ", z=" + a.z.toFixed(2) + ")";
+            }).join(", ");
           }
+          // Chart spec built by the Charts module from pure inputs (no DOM reads inside).
+          var spec = Core.Charts.buildLineSpec(series, {
+            regression: document.getElementById("optRegression").checked,
+            movingAvg: document.getElementById("optMovingAvg").checked,
+            maWindow: parseInt(document.getElementById("maWindow").value, 10)
+        });
+          var th = chartTheme();
+          // Put anomaly points on the main dataset: bigger, red, annotated on hover.
+          if (spec.datasets && spec.datasets.length && ano.length) {
+            var main = spec.datasets[0];
+            main.pointRadius = main.data.map(function (_, i) { return ano.some(function (a) { return a.index === i; }) ? 5 : 2; });
+            main.pointBackgroundColor = main.data.map(function (_, i) { return ano.some(function (a) { return a.index === i; }) ? "#dc2626" : (main.borderColor || th.text); });
+            main.pointStyle = main.data.map(function (_, i) { return ano.some(function (a) { return a.index === i; }) ? "triangle" : "circle"; });
+          }
+          state.chart = new Chart(ctx, {
+            type: "line",
+            data: spec,
+            options: {
+              responsive: true, maintainAspectRatio: false, animation: false,
+              plugins: { legend: { display: spec.datasets.length > 1, labels: { color: th.text } } },
+              scales: {
+                x: { ticks: { color: th.text, maxTicksLimit: 12, autoSkip: true }, grid: { color: th.grid }, title: { display: true, text: store.get("aggMode") === "day" ? "Date (daily)" : "Period (" + store.get("aggMode") + ")" } },
+                y: { beginAtZero: true, ticks: { color: th.text }, grid: { color: th.grid }, title: { display: true, text: "Units sold" } }
+              }
+            }
+          });
         }
-      });
-    }
 
   function renderCountries(byCountry) {
     var el = document.getElementById("countryList");
@@ -4535,9 +4842,119 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
                 });
         // Product search: filter the visible checklist as you type (checkbox state is untouched).
         document.getElementById("productSearch").addEventListener("input", applyProductSearch);
-  ["optRegression", "optMovingAvg"].forEach(function (id) { document.getElementById(id).addEventListener("change", renderAll); });
-  document.getElementById("maWindow").addEventListener("change", function () { renderAll(); });
-  document.getElementById("resetBtn").addEventListener("click", App.resetFilters);
+                document.getElementById("countrySearch").addEventListener("input", applyCountrySearch);
+          ["optRegression", "optMovingAvg"].forEach(function (id) { document.getElementById(id).addEventListener("change", renderAll); });
+          document.getElementById("maWindow").addEventListener("change", function () { renderAll(); });
+          document.getElementById("resetBtn").addEventListener("click", App.resetFilters);
+
+          // ---- Phase 9 usability: collapsible sidebar (persisted) + keyboard shortcuts ----
+          var SIDEBAR_LS_KEY = "salesSidebarCollapsed";
+          function applySidebar(collapsed) {
+            document.body.classList.toggle("sidebar-collapsed", !!collapsed);
+            var btn = document.getElementById("sidebarToggle");
+            if (btn) btn.textContent = collapsed ? "Show filters" : "Hide filters";
+            try { localStorage.setItem(SIDEBAR_LS_KEY, collapsed ? "1" : "0"); } catch (e) {}
+          }
+          document.getElementById("sidebarToggle").addEventListener("click", function () {
+            applySidebar(!document.body.classList.contains("sidebar-collapsed"));
+          });
+          document.addEventListener("keydown", function (e) {
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            var tag = e.target && e.target.tagName;
+            var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+            if (e.key === "/" && !typing) { e.preventDefault(); var ps = document.getElementById("productSearch"); if (ps) ps.focus(); }
+            if ((e.key === "f" || e.key === "F") && !typing) { applySidebar(!document.body.classList.contains("sidebar-collapsed")); }
+            if (e.key === "d" && !typing) { var df = document.getElementById("dateFrom"); if (df) df.focus(); }
+          });
+          (function () { try { var v = localStorage.getItem(SIDEBAR_LS_KEY); applySidebar(v === "1"); } catch (e) {} })();
+
+          // ---- Phase 9: saved views — named bundles of filters + charts, saved to localStorage, JSON-exportable ----
+          var VIEWS_LS_KEY = "salesSavedViews";
+          function loadViews() { try { return JSON.parse(localStorage.getItem(VIEWS_LS_KEY)) || []; } catch (e) { return []; } }
+          function saveViews(views) { try { localStorage.setItem(VIEWS_LS_KEY, JSON.stringify(views)); } catch (e) {} }
+          function currentViewSnapshot() {
+            return {
+              aggMode: store.get("aggMode"),
+              selectedProducts: store.get("selectedProducts").slice(),
+              selectedCountries: store.get("selectedCountries").slice(),
+              selectedThemes: (store.get("selectedThemes") || []).slice(),
+              dateFrom: document.getElementById("dateFrom").value,
+              dateTo: document.getElementById("dateTo").value,
+              charts: JSON.parse(JSON.stringify(savedCharts || []))
+            };
+          }
+          function applyViewSnapshot(v) {
+            document.querySelectorAll("#productList input").forEach(function (i) { i.checked = v.selectedProducts.indexOf(i.value) !== -1; });
+            document.querySelectorAll("#countryChecklist input").forEach(function (i) { i.checked = v.selectedCountries.indexOf(i.value) !== -1; });
+            document.querySelectorAll("#themeChecklist input").forEach(function (i) { i.checked = (v.selectedThemes || []).indexOf(i.value) !== -1; });
+            if (v.aggMode) { var rad = document.querySelector('input[name="agg"][value="' + v.aggMode + '"]'); if (rad) rad.checked = true; store.set("aggMode", v.aggMode); }
+            document.getElementById("dateFrom").value = v.dateFrom || "";
+            document.getElementById("dateTo").value = v.dateTo || "";
+            var range = readDateRange();
+            store.update({ dateFromMs: range[0], dateToMs: range[1] });
+            savedCharts.length = 0;
+            (v.charts || []).forEach(function (c) { savedCharts.push(JSON.parse(JSON.stringify(c))); });
+            syncChecklistState();
+            renderChartList();
+            renderAll();
+          }
+          function renderSavedViews() {
+            var el = document.getElementById("savedViewsList");
+            if (!el) return;
+            el.textContent = "";
+            var views = loadViews();
+            if (!views.length) { var m = document.createElement("span"); m.className = "muted"; m.textContent = "No saved views yet."; el.appendChild(m); return; }
+            views.forEach(function (v, i) {
+              var row = document.createElement("div");
+              var name = document.createElement("span");
+              name.textContent = v.name;
+              name.style.cssText = "cursor:pointer;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis";
+              name.title = "Load view";
+              row.style.cssText = "display:flex;gap:6px;align-items:center;font-size:.78rem;cursor:pointer";
+              row.addEventListener("click", function () { applyViewSnapshot(v); });
+              var del = document.createElement("button");
+              del.type = "button"; del.textContent = "✕"; del.style.cssText = "font-size:.68rem";
+              del.title = "Delete view";
+              del.addEventListener("click", function (e) { e.stopPropagation(); var vs = loadViews(); vs.splice(i, 1); saveViews(vs); renderSavedViews(); });
+              row.appendChild(name); row.appendChild(del);
+              el.appendChild(row);
+            });
+          }
+          document.getElementById("saveViewBtn").addEventListener("click", function () {
+            var name = document.getElementById("viewName").value.trim() || ("View " + (loadViews().length + 1));
+            var views = loadViews();
+            views.push(Object.assign({ name: name, savedAt: new Date().toISOString() }, currentViewSnapshot()));
+            saveViews(views);
+            renderSavedViews();
+          });
+          document.getElementById("exportViewsBtn").addEventListener("click", function () {
+            var blob = new Blob([JSON.stringify(loadViews(), null, 2)], { type: "application/json" });
+            var a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = "sales-views.json";
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+          });
+          document.getElementById("importViewsBtn").addEventListener("click", function () {
+            document.getElementById("viewsImportInput").click();
+          });
+          document.getElementById("viewsImportInput").addEventListener("change", function () {
+            var f = this.files && this.files[0];
+            if (!f) return;
+            var reader = new FileReader();
+            reader.onload = function () {
+              try {
+                var arr = JSON.parse(reader.result);
+                if (!Array.isArray(arr)) throw new Error("not an array");
+                arr.forEach(function (v) { if (!v || typeof v.name !== "string") throw new Error("bad view"); });
+                saveViews(arr.concat(loadViews()));
+                renderSavedViews();
+              } catch (e) { showError("Import failed: " + e.message); }
+            };
+            reader.readAsText(f);
+            this.value = "";
+          });
+          renderSavedViews();
 
     // ---- Light / dark theme (persisted; defaults to the built-in dark theme) ----
     var THEME_LS_KEY = "salesTheme";

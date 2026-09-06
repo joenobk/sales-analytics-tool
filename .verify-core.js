@@ -145,6 +145,55 @@ if (!rPipe.resultId || !rPipe.taxonomy || rPipe.taxonomy.length !== 3 || !rPipe.
 console.log("phase 8.7 extract_text_insights deterministic: ok");
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Phase 9: importance, hierarchy, and visual clarity — deterministic severity
+// ---------------------------------------------------------------------------
+const SEV = Core.Severity;
+// Levels: positive, normal, watch, critical; the engine assigns, never the model.
+const sPos = SEV.severityScore({ magnitudePct: 0.3, z: 1.5, concentration: 0.1, positiveIsGood: true });
+if (sPos.level !== "positive") { console.error("FAIL 9.1: big good move must be positive", JSON.stringify(sPos)); process.exit(1); }
+const sCrit = SEV.severityScore({ magnitudePct: -0.6, z: 3.1, concentration: 0.7, positiveIsGood: true });
+if (sCrit.level !== "critical" || sCrit.score < 4) { console.error("FAIL 9.1: large bad move + z + concentration must be critical", JSON.stringify(sCrit)); process.exit(1); }
+const sWatch = SEV.severityScore({ magnitudePct: -0.3, z: 1.2, concentration: 0.3, positiveIsGood: true });
+if (sWatch.level !== "watch") { console.error("FAIL 9.1: moderate bad move must be watch", JSON.stringify(sWatch)); process.exit(1); }
+const sNorm = SEV.severityScore({ magnitudePct: 0.01, z: 0.1, concentration: 0, positiveIsGood: true });
+if (sNorm.level !== "normal") { console.error("FAIL 9.1: tiny move must be normal", JSON.stringify(sNorm)); process.exit(1); }
+const sRisk = SEV.severityScore({ magnitudePct: -0.04, z: 0.3, concentration: 0.85, positiveIsGood: true });
+if (sRisk.level !== "watch") { console.error("FAIL 9.1: concentration risk raises a small bad figure to watch", JSON.stringify(sRisk)); process.exit(1); }
+// Determinism: same inputs -> same level/score every time.
+const sAgain = SEV.severityScore({ magnitudePct: -0.6, z: 3.1, concentration: 0.7, positiveIsGood: true });
+if (sAgain.score !== sCrit.score || sAgain.level !== sCrit.level) { console.error("FAIL 9.1: severity must be deterministic", JSON.stringify({ sCrit, sAgain })); process.exit(1); }
+console.log("phase 9.1 severity levels + determinism: ok");
+
+// z-score vs a trailing window: stable window -> low z; spike -> z>2 (anomaly).
+const win = [100, 102, 98, 101, 99, 103, 97, 100, 101, 99, 102, 98, 100, 101, 99];
+const zStable = SEV.zScore(100, win);
+if (Math.abs(zStable) >= 1) { console.error("FAIL 9.2: stable value must have low z", zStable); process.exit(1); }
+const zSpike = SEV.zScore(220, win);
+if (zSpike <= 2) { console.error("FAIL 9.2: spike must be >2 sigma", zSpike); process.exit(1); }
+console.log("phase 9.2 z-score vs trailing window: ok");
+
+// Anomaly markers: points outside 2 sigma of a ROLLING window, annotated with index/value/z.
+const anoSeries = [];
+for (let i = 0; i < 40; i++) anoSeries.push({ t: "2024-01-" + String(i + 1).padStart(2, "0"), units: (i % 5 === 0 ? 100 : 10) });
+const anoms = SEV.anomalies(anoSeries, 12);
+if (!anoms.length || anoms.length !== 5) { console.error("FAIL 9.3: expected 5 anomaly markers (every 5th spike after the window)", JSON.stringify(anoms)); process.exit(1); }
+if (anoms[0].value !== 100 || anoms[0].z <= 2 || anoms[0].label == null) { console.error("FAIL 9.3: anomaly must carry value+z+label", JSON.stringify(anoms[0])); process.exit(1); }
+console.log("phase 9.3 anomalies (rolling 2σ): ok");
+
+// Sparkline: ≤maxPoints, normalized 0..1, preserves shape.
+const spark = SEV.sparkline([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50], 5);
+if (spark.length > 5 || spark.length < 1) { console.error("FAIL 9.4: sparkline must downsample", JSON.stringify(spark)); process.exit(1); }
+if (Math.min.apply(null, spark) < -0.001 || Math.max.apply(null, spark) > 1.001) { console.error("FAIL 9.4: sparkline must normalize 0..1", JSON.stringify(spark)); process.exit(1); }
+if (spark[spark.length - 1] <= spark[0]) { console.error("FAIL 9.4: sparkline must preserve the rising shape", JSON.stringify(spark)); process.exit(1); }
+console.log("phase 9.4 sparkline normalize+shape: ok");
+
+// Confidence/sample-size: few rows low, many rows high; never looks like many.
+if (SEV.confidenceLabel(3).label !== "low" || SEV.confidenceLabel(3).note.indexOf("cautiously") === -1) { console.error("FAIL 9.5: 3 rows must be low confidence", JSON.stringify(SEV.confidenceLabel(3))); process.exit(1); }
+if (SEV.confidenceLabel(300).label !== "high") { console.error("FAIL 9.5: 300 rows must be high", JSON.stringify(SEV.confidenceLabel(300))); process.exit(1); }
+console.log("phase 9.5 confidence/sample-size: ok");
+// ---------------------------------------------------------------------------
+
 // 1. Parse + validate
 const parsed = Core.parseCsvData(header, dataRows);
 console.log("rows:", parsed.rows.length, "errors:", JSON.stringify(parsed.errors));
