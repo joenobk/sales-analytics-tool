@@ -19,6 +19,339 @@ const lines = csvText.split(/\r?\n/);
 const header = lines[0].split(",");
 const dataRows = lines.slice(1).map(l => l.split(","));
 
+// ---------------------------------------------------------------------------
+// Phase 7: verification layer — fabricated numbers flagged, verified answers
+// fully verified, resultIds on every tool result, definition registry.
+// ---------------------------------------------------------------------------
+const ex = Core.Verify.extractNumbers("total: 9,537.5 units [r1]; down 12% from 2017; 0.25");
+if (ex.length !== 4 || ex[0].num !== 9537.5 || ex[1].num !== 12 || ex[2].num !== 2017 || ex[3].num !== 0.25) { console.error("FAIL 7.1: extractNumbers", JSON.stringify(ex)); process.exit(1); }
+console.log("phase 7.1 extractNumbers: ok");
+
+const vRes = [
+  { tool: "query", args: { dimensions: ["month"] }, result: { resultId: "r1", rows: [{ month: "2017-03", units: 320 }], count: 1 } },
+  { tool: "compare_periods", args: {}, result: { resultId: "r2", current: 320, prior: 300, deltaAbs: 20, deltaPct: 0.0667 } }
+];
+const vc = Core.Verify.checkClaims("March total was 320 units [r1], up 20 from 300 [r2]. We invented 9999.", vRes);
+if (vc.total !== 4 || vc.verified.length !== 3 || vc.unverified.length !== 1 || vc.unverified[0].str !== "9999") { console.error("FAIL 7.2: checkClaims verified/unverified", JSON.stringify(vc)); process.exit(1); }
+if (vc.citations.join(",") !== "r1,r2") { console.error("FAIL 7.2: citations", JSON.stringify(vc.citations)); process.exit(1); }
+console.log("phase 7.2 checkClaims fully-verified + fabrication: ok");
+
+const emptyRes = [{ tool: "query", args: {}, result: { resultId: "r1", rows: [], count: 0 } }];
+const vc2 = Core.Verify.checkClaims("No rows existed, but I report 888 units.", emptyRes);
+if (!vc2.hasEmptyResult || vc2.unverified.some(u => u.str !== "888")) { console.error("FAIL 7.3: empty-result fabrication flag", JSON.stringify(vc2)); process.exit(1); }
+console.log("phase 7.3 empty-result honesty: ok");
+
+const chips = Core.Verify.renderCitations("total 320 [r1], prior 300 [r2]");
+if (!chips.includes('class="cite-chip"') || !chips.includes('data-rid="r1"') || !chips.includes(">r1<")) { console.error("FAIL 7.4: renderCitations", chips); process.exit(1); }
+console.log("phase 7.4 renderCitations: ok");
+
+// Every tool result carries a resultId (the model can cite any of them).
+const ctxAll = { datasets: [{ id: "d1", name: "t", hasData: true, mapping: [{ name: "m", type: "text", role: "dimension", concept: "product", idx: 0 }], rowsArr: [] }] };
+const t1 = Core.Tools.runTool("list_datasets", {}, ctxAll);
+const t2 = Core.Tools.runTool("describe_schema", { datasetId: "d1" }, ctxAll);
+const t3 = Core.Tools.runTool("query", { dimensions: ["m"], measures: [] , limit: 10}, ctxAll);
+const t4 = Core.Tools.runTool("extract_text_insights", { field: "m" }, ctxAll);
+if (!t1.resultId || !t2.resultId || !t3.resultId || !t4.resultId) { console.error("FAIL 7.5: resultId on every tool result", JSON.stringify({ t1, t2, t3, t4 })); process.exit(1); }
+console.log("phase 7.5 resultId on every tool: ok");
+
+const d1 = Core.Verify.getDefinition("totalUnits");
+const d2 = Core.Verify.getDefinition("winRate");
+if (!d1 || !/sum/i.test(d1.definition) || !d2 || !/won/.test(d2.definition)) { console.error("FAIL 7.6: definition registry", JSON.stringify({ d1, d2 })); process.exit(1); }
+console.log("phase 7.6 definition registry: ok");
+
+// ---------------------------------------------------------------------------
+// Phase 8: text analytics — two-pass taxonomy, strict per-row schema, cache by
+// text hash, derived columns, honest low-confidence/unclassified reporting.
+// ---------------------------------------------------------------------------
+const TA = Core.TextAnalytics;
+const h1 = TA.textHash("Customer happy with pricing");
+const h2 = TA.textHash("Complained about late delivery");
+if (h1 !== h2 && h1.length === 8 && h1 === TA.textHash("Customer happy with pricing")) { console.log("phase 8.1 textHash: ok"); }
+else { console.error("FAIL 8.1: textHash must be stable + distinct", h1, h2); process.exit(1); }
+
+const taxReply = JSON.stringify({ categories: [
+  { name: "Positive feedback", definition: "Praise or satisfaction.", examples: ["happy with", "great service"] },
+  { name: "Complaint", definition: "A problem or issue.", examples: ["late delivery", "broken"] },
+  { name: "Question", definition: "Asks for information.", examples: ["how do I", "can you"] }
+] });
+const parsedTax = TA.parseTaxonomy("Here you go:\n```json\n" + taxReply + "\n```");
+if (parsedTax.error || parsedTax.taxonomy.categories.length !== 3 || parsedTax.taxonomy.categories[1].name !== "Complaint") { console.error("FAIL 8.2: parseTaxonomy", JSON.stringify(parsedTax)); process.exit(1); }
+if (!TA.parseTaxonomy("no json here").error) { console.error("FAIL 8.2: parseTaxonomy must error on non-JSON"); process.exit(1); }
+console.log("phase 8.2 parseTaxonomy: ok");
+
+const texts = ["Customer happy with pricing", "Complained about late delivery"];
+const prompt2 = TA.buildClassifyPrompt(parsedTax.taxonomy, texts);
+if (!prompt2.includes("Complaint") || !prompt2.includes("sentiment") || !prompt2.includes("escalationFlag")) { console.error("FAIL 8.3: buildClassifyPrompt must carry the locked taxonomy + strict schema"); process.exit(1); }
+const goodReply = JSON.stringify([
+  { sentiment: 0.8, sentimentLabel: "positive", categories: ["Positive feedback"], keyPhrases: ["happy"], escalationFlag: false, confidence: 0.9 },
+  { sentiment: -0.7, sentimentLabel: "negative", categories: ["Complaint"], keyPhrases: ["late"], escalationFlag: true, confidence: 0.8 }
+]);
+const pc = TA.parseClassification(goodReply, parsedTax.taxonomy);
+if (pc.error || pc.rows.length !== 2 || pc.rows[1].escalationFlag !== true || pc.rows[0].sentiment !== 0.8) { console.error("FAIL 8.3: parseClassification valid rows", JSON.stringify(pc)); process.exit(1); }
+const offTax = JSON.stringify([
+  { sentiment: 0.1, sentimentLabel: "neutral", categories: ["NotARealCategory"], keyPhrases: [], escalationFlag: false, confidence: 0.5 }
+]);
+const pcBad = TA.parseClassification(offTax, parsedTax.taxonomy);
+if (!pcBad.error || !/outside the taxonomy/.test(pcBad.error)) { console.error("FAIL 8.3: off-taxonomy category must be rejected", JSON.stringify(pcBad)); process.exit(1); }
+const pcSchema = TA.parseClassification(JSON.stringify([{ sentiment: 2, sentimentLabel: "x", categories: [], keyPhrases: [], escalationFlag: false, confidence: 0.5 }]), parsedTax.taxonomy);
+if (!pcSchema.error) { console.error("FAIL 8.3: sentiment out of range must be rejected"); process.exit(1); }
+console.log("phase 8.3 strict classification + off-taxonomy rejection: ok");
+
+// Cache by hash of the text + taxonomy signature; re-runs cost nothing; a changed taxonomy misses.
+const sig = TA.taxonomySig(parsedTax.taxonomy);
+const cls = { sentiment: 0.8, sentimentLabel: "positive", categories: ["Positive feedback"], keyPhrases: [], escalationFlag: false, confidence: 0.9 };
+TA.cacheResult(texts[0], sig, cls);
+const hit = TA.cachedResult(texts[0], sig);
+if (!hit || hit.sentiment !== 0.8) { console.error("FAIL 8.4: cached result must come back", JSON.stringify(hit)); process.exit(1); }
+const sig2 = TA.taxonomySig({ categories: [{ name: "Different", definition: "x", examples: [] }] });
+if (TA.cachedResult(texts[0], sig2)) { console.error("FAIL 8.4: different taxonomy must invalidate the cache"); process.exit(1); }
+console.log("phase 8.4 text cache (hash + taxonomy sig): ok");
+
+// Derived columns: sentiment/theme become ordinary mapped columns on the dataset.
+const tRows = [["2024-01-05", "happy with pricing"], ["2024-01-06", "late delivery"], ["2024-01-07", ""]];
+const tMap = [{ name: "Date", type: "date", role: "time", idx: 0 }, { name: "Notes", type: "text", role: "text", idx: 1 }];
+const classified = [
+  { sentiment: 0.9, sentimentLabel: "positive", categories: ["Positive feedback"], keyPhrases: [], escalationFlag: false, confidence: 0.9 },
+  { sentiment: -0.6, sentimentLabel: "negative", categories: ["Complaint"], keyPhrases: [], escalationFlag: true, confidence: 0.99 },
+  null // unclassified row — must stay blank, not forced
+];
+const att = TA.attachDerivedColumns(tMap, tRows, 1, classified);
+const names = att.mapping.map(c => c.name);
+if (!names.includes("Notes·Sentiment") || !names.includes("Notes·Theme") || !names.includes("Notes·Escalation")) { console.error("FAIL 8.5: derived columns missing", JSON.stringify(names)); process.exit(1); }
+const themeIdx = att.mapping.find(c => c.name === "Notes·Theme").idx;
+const sentIdx = att.mapping.find(c => c.name === "Notes·Sentiment").idx;
+const escIdx = att.mapping.find(c => c.name === "Notes·Escalation").idx;
+const confIdx = att.mapping.find(c => c.name === "Notes·Confidence").idx;
+if (tRows[0][themeIdx] !== "Positive feedback" || tRows[1][sentIdx] !== -0.6 || tRows[1][escIdx] !== "yes" || tRows[2][themeIdx] !== "" || tRows[2][sentIdx] !== null) { console.error("FAIL 8.5: derived values not written", JSON.stringify(tRows)); process.exit(1); }
+// Chartable through the normal engine: "Theme"/"Sentiment" resolve and group.
+const themeCol = Core.Charts.fieldColumn(att.mapping, "Theme");
+const sentCol = Core.Charts.fieldColumn(att.mapping, "Sentiment");
+if (!themeCol || !sentCol || Core.Metrics.columnIndex(att.mapping, "Sentiment") < 0) { console.error("FAIL 8.5: derived columns must resolve for charts", JSON.stringify({ themeCol, sentCol })); process.exit(1); }
+const specByTheme = Core.Charts.buildSeries({ type: "bar", x: { field: "Theme" }, y: [{ field: "Sentiment", agg: "avg" }] }, tRows, att.mapping, {});
+if (!specByTheme.labels.length || specByTheme.labels.indexOf("Positive feedback") === -1) { console.error("FAIL 8.5: buildSeries must group by the derived Theme", JSON.stringify(specByTheme.labels)); process.exit(1); }
+console.log("phase 8.5 derived columns + chartable via normal engine: ok");
+
+const taStats = TA.themeStats(tRows, themeIdx, escIdx, confIdx);
+if (taStats.themes.find(t => t.name === "Positive feedback").count !== 1 || taStats.themes.find(t => t.name === "(unclassified)").count !== 1 || taStats.escalationCount !== 1 || taStats.lowConfidenceCount !== 0) { console.error("FAIL 8.6: themeStats", JSON.stringify(taStats)); process.exit(1); }
+console.log("phase 8.6 themeStats + honest unclassified: ok");
+
+// extract_text_insights is deterministic: helpful error without a pipeline; summary with one.
+const dsNoPipe = { id: "d1", name: "t", mapping: tMap, rowsArr: tRows };
+const rNoPipe = Core.Tools.runTool("extract_text_insights", { field: "Notes" }, { datasets: [dsNoPipe] });
+if (!rNoPipe.note || !/UI/.test(rNoPipe.note)) { console.error("FAIL 8.7: extract_text_insights without pipeline", JSON.stringify(rNoPipe)); process.exit(1); }
+const dsPipe = Object.assign({}, dsNoPipe, { mapping: att.mapping, textInsights: { locked: true, classified: true, colIdx: 1, themeIdx: themeIdx, escalationIdx: escIdx, confidenceIdx: confIdx, taxonomy: parsedTax.taxonomy } });
+const rPipe = Core.Tools.runTool("extract_text_insights", { field: "Notes" }, { datasets: [dsPipe] });
+if (!rPipe.resultId || !rPipe.taxonomy || rPipe.taxonomy.length !== 3 || !rPipe.themes || rPipe.themes.length !== 3 || rPipe.themes.find(t => t.name === "Complaint").count !== 1 || rPipe.themes.find(t => t.name === "(unclassified)").count !== 1) { console.error("FAIL 8.7: extract_text_insights summary", JSON.stringify(rPipe)); process.exit(1); }
+console.log("phase 8.7 extract_text_insights deterministic: ok");
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Phase 9: importance, hierarchy, and visual clarity — deterministic severity
+// ---------------------------------------------------------------------------
+const SEV = Core.Severity;
+// Levels: positive, normal, watch, critical; the engine assigns, never the model.
+const sPos = SEV.severityScore({ magnitudePct: 0.3, z: 1.5, concentration: 0.1, positiveIsGood: true });
+if (sPos.level !== "positive") { console.error("FAIL 9.1: big good move must be positive", JSON.stringify(sPos)); process.exit(1); }
+const sCrit = SEV.severityScore({ magnitudePct: -0.6, z: 3.1, concentration: 0.7, positiveIsGood: true });
+if (sCrit.level !== "critical" || sCrit.score < 4) { console.error("FAIL 9.1: large bad move + z + concentration must be critical", JSON.stringify(sCrit)); process.exit(1); }
+const sWatch = SEV.severityScore({ magnitudePct: -0.3, z: 1.2, concentration: 0.3, positiveIsGood: true });
+if (sWatch.level !== "watch") { console.error("FAIL 9.1: moderate bad move must be watch", JSON.stringify(sWatch)); process.exit(1); }
+const sNorm = SEV.severityScore({ magnitudePct: 0.01, z: 0.1, concentration: 0, positiveIsGood: true });
+if (sNorm.level !== "normal") { console.error("FAIL 9.1: tiny move must be normal", JSON.stringify(sNorm)); process.exit(1); }
+const sRisk = SEV.severityScore({ magnitudePct: -0.04, z: 0.3, concentration: 0.85, positiveIsGood: true });
+if (sRisk.level !== "watch") { console.error("FAIL 9.1: concentration risk raises a small bad figure to watch", JSON.stringify(sRisk)); process.exit(1); }
+// Determinism: same inputs -> same level/score every time.
+const sAgain = SEV.severityScore({ magnitudePct: -0.6, z: 3.1, concentration: 0.7, positiveIsGood: true });
+if (sAgain.score !== sCrit.score || sAgain.level !== sCrit.level) { console.error("FAIL 9.1: severity must be deterministic", JSON.stringify({ sCrit, sAgain })); process.exit(1); }
+console.log("phase 9.1 severity levels + determinism: ok");
+
+// z-score vs a trailing window: stable window -> low z; spike -> z>2 (anomaly).
+const win = [100, 102, 98, 101, 99, 103, 97, 100, 101, 99, 102, 98, 100, 101, 99];
+const zStable = SEV.zScore(100, win);
+if (Math.abs(zStable) >= 1) { console.error("FAIL 9.2: stable value must have low z", zStable); process.exit(1); }
+const zSpike = SEV.zScore(220, win);
+if (zSpike <= 2) { console.error("FAIL 9.2: spike must be >2 sigma", zSpike); process.exit(1); }
+console.log("phase 9.2 z-score vs trailing window: ok");
+
+// Anomaly markers: points outside 2 sigma of a ROLLING window, annotated with index/value/z.
+const anoSeries = [];
+for (let i = 0; i < 40; i++) anoSeries.push({ t: "2024-01-" + String(i + 1).padStart(2, "0"), units: (i % 5 === 0 ? 100 : 10) });
+const anoms = SEV.anomalies(anoSeries, 12);
+if (!anoms.length || anoms.length !== 5) { console.error("FAIL 9.3: expected 5 anomaly markers (every 5th spike after the window)", JSON.stringify(anoms)); process.exit(1); }
+if (anoms[0].value !== 100 || anoms[0].z <= 2 || anoms[0].label == null) { console.error("FAIL 9.3: anomaly must carry value+z+label", JSON.stringify(anoms[0])); process.exit(1); }
+console.log("phase 9.3 anomalies (rolling 2σ): ok");
+
+// Sparkline: ≤maxPoints, normalized 0..1, preserves shape.
+const spark = SEV.sparkline([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50], 5);
+if (spark.length > 5 || spark.length < 1) { console.error("FAIL 9.4: sparkline must downsample", JSON.stringify(spark)); process.exit(1); }
+if (Math.min.apply(null, spark) < -0.001 || Math.max.apply(null, spark) > 1.001) { console.error("FAIL 9.4: sparkline must normalize 0..1", JSON.stringify(spark)); process.exit(1); }
+if (spark[spark.length - 1] <= spark[0]) { console.error("FAIL 9.4: sparkline must preserve the rising shape", JSON.stringify(spark)); process.exit(1); }
+console.log("phase 9.4 sparkline normalize+shape: ok");
+
+// Confidence/sample-size: few rows low, many rows high; never looks like many.
+if (SEV.confidenceLabel(3).label !== "low" || SEV.confidenceLabel(3).note.indexOf("cautiously") === -1) { console.error("FAIL 9.5: 3 rows must be low confidence", JSON.stringify(SEV.confidenceLabel(3))); process.exit(1); }
+if (SEV.confidenceLabel(300).label !== "high") { console.error("FAIL 9.5: 300 rows must be high", JSON.stringify(SEV.confidenceLabel(300))); process.exit(1); }
+console.log("phase 9.5 confidence/sample-size: ok");
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Phase 10: QBR report builder — auto-draft with cited figures, quarter parse,
+// deterministic ids, actions tied to figures.
+// ---------------------------------------------------------------------------
+const RB = Core.ReportBuilder;
+// 10.1 Quarter parsing.
+const q2 = RB.parseQuarter("2026-Q2");
+if (!q2 || q2.year !== 2026 || q2.q !== 2) { console.error("FAIL 10.1: parseQuarter('2026-Q2')", JSON.stringify(q2)); process.exit(1); }
+const qy = RB.parseQuarter("2025");
+if (!qy || qy.year !== 2025 || qy.q !== null) { console.error("FAIL 10.1: parseQuarter('2025')", JSON.stringify(qy)); process.exit(1); }
+if (RB.parseQuarter("bogus") !== null || RB.parseQuarter("2026-Q9") !== null) { console.error("FAIL 10.1: invalid quarters must be null"); process.exit(1); }
+const qb = RB.quarterBounds(2026, 2);
+if (new Date(qb.fromMs).getMonth() !== 3 || new Date(qb.toMs).getMonth() !== 5) { console.error("FAIL 10.1: Q2 bounds must be Apr-Jun", JSON.stringify(qb)); process.exit(1); }
+console.log("phase 10.1 parseQuarter + quarterBounds: ok");
+
+// 10.2 Auto-draft on a small transactions fixture.
+const qbrRows = [
+  ["2026-04-05", "P1", "DE", "5"], ["2026-04-12", "P2", "DE", "7"], ["2026-05-01", "P1", "FR", "4"],
+  ["2026-05-20", "P3", "DE", "9"], ["2026-06-10", "P2", "FR", "6"], ["2026-06-28", "P1", "DE", "3"]
+];
+const qbrHeader = ["Date", "Product", "Country", "Amount"];
+const qbrMapping = [
+  { name: "Date", type: "date", role: "time", concept: "time", idx: 0, format: "iso" },
+  { name: "Product", type: "categorical", role: "dimension", concept: "product", idx: 1 },
+  { name: "Country", type: "categorical", role: "geo", concept: "geography", idx: 2 },
+  { name: "Amount", type: "number", role: "measure", concept: "amount", idx: 3 }
+];
+const draft1 = RB.buildAutoDraft({
+  stats: { series: [], total: 34, topProducts: [["P1", 12]], rowCount: 6 },
+  mapping: qbrMapping, rowsArr: qbrRows, recName: "QBR fixture", recKind: "transactions",
+  provenance: "Source: QBR fixture · rows 6", quarter: { year: 2026, q: 2 }
+});
+if (!draft1.sections || draft1.sections.length < 5) { console.error("FAIL 10.2: must produce >=5 sections", draft1.sections && draft1.sections.length); process.exit(1); }
+const hl = draft1.sections.find(s => s.id === "s-headline");
+if (!hl || hl.body.indexOf("34") === -1 || !hl.figures.length) { console.error("FAIL 10.2: headline must cite the Q2 total (34)", JSON.stringify(hl)); process.exit(1); }
+if (!draft1.figures.length || !draft1.figures.every(f => f.id && f.label != null && f.value != null && f.source)) { console.error("FAIL 10.2: figures must carry id/label/value/source", JSON.stringify(draft1.figures.slice(0,2))); process.exit(1); }
+if (!draft1.sections.every(s => s.provenance)) { console.error("FAIL 10.2: every section needs provenance"); process.exit(1); }
+if (!draft1.sections.find(s => s.id === "s-actions")) { console.error("FAIL 10.2: actions section missing"); process.exit(1); }
+console.log("phase 10.2 auto-draft sections + cited headline + provenance: ok");
+
+// 10.3 Determinism: same inputs -> identical figure ids (r1..rn).
+const draft2 = RB.buildAutoDraft({
+  stats: { series: [], total: 34, topProducts: [["P1", 12]], rowCount: 6 },
+  mapping: qbrMapping, rowsArr: qbrRows, recName: "QBR fixture", recKind: "transactions",
+  provenance: "Source: QBR fixture · rows 6", quarter: { year: 2026, q: 2 }
+});
+const ids1 = draft1.figures.map(f => f.id).join(",");
+const ids2 = draft2.figures.map(f => f.id).join(",");
+if (ids1 !== ids2) { console.error("FAIL 10.3: auto-draft must be deterministic", ids1, ids2); process.exit(1); }
+if (draft1.figures.some((f, i) => f.id !== "r" + (i + 1))) { console.error("FAIL 10.3: citations must be sequential r1..rn"); process.exit(1); }
+console.log("phase 10.3 auto-draft determinism + sequential citations: ok");
+
+// 10.4 Every recommended action is tied to an existing figure.
+const acts = draft1.sections.find(s => s.id === "s-actions");
+if (!acts || !acts.body) { console.error("FAIL 10.4: actions body", JSON.stringify(acts)); process.exit(1); }
+const figIds = new Set(draft1.figures.map(f => f.id));
+const cited = acts.body.match(/\[r\d+\]/g) || [];
+if (!cited.length) { console.error("FAIL 10.4: actions must cite figures"); process.exit(1); }
+for (const c of cited) if (!figIds.has(c.slice(1, -1))) { console.error("FAIL 10.4: action citation " + c + " must exist in figures"); process.exit(1); }
+console.log("phase 10.4 actions tied to figures: ok");
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Phase 11: AI-guided multi-file discovery & onboarding
+// ---------------------------------------------------------------------------
+const OB = Core.Onboarding;
+// 11.1 Concept vocabulary binds the corpus entities (Contact, Lead, Sale, Sale-Line).
+const cContact = OB.conceptFromHeaderWord("ContactID");
+if (cContact !== "contact") { console.error("FAIL 11.1: ContactID must bind to contact", cContact); process.exit(1); }
+const cLead = OB.conceptFromHeaderWord("LeadID");
+if (cLead !== "lead") { console.error("FAIL 11.1: LeadID must bind to lead", cLead); process.exit(1); }
+const cSale = OB.conceptFromHeaderWord("SalesID");
+if (cSale !== "sale") { console.error("FAIL 11.1: SalesID must bind to sale", cSale); process.exit(1); }
+const cLine = OB.conceptFromHeaderWord("LineID");
+if (cLine !== "sale_line") { console.error("FAIL 11.1: LineID must bind to sale_line", cLine); process.exit(1); }
+console.log("phase 11.1 corpus concept vocabulary: ok");
+
+// 11.2 Pre-profile: compact, deterministic, NEVER full rows (headers + ≤5 samples only).
+const profRows = [["C1", "Alice", "2024-01-05", "100"], ["C2", "Bob", "2024-02-10", "200"]];
+const profMap = [
+  { name: "ContactID", type: "identifier", role: "identifier", concept: "contact", idx: 0 }, 
+  { name: "FullName", type: "text", role: "dimension", idx: 1 },
+  { name: "CreatedDate", type: "date", role: "time", concept: "time", idx: 2, format: "iso" },
+  { name: "Amount", type: "number", role: "measure", concept: "amount", idx: 3 }
+];
+const prof = OB.preProfile("Contacts.csv", ["ContactID", "FullName", "CreatedDate", "Amount"], profRows, profMap);
+if (prof.name !== "Contacts.csv" || prof.rowCount !== 2 || prof.dateRange[0] !== "2024-01-05" || prof.dateRange[1] !== "2024-02-10") { console.error("FAIL 11.2: pre-profile basics", JSON.stringify(prof)); process.exit(1); }
+const profJSON = JSON.stringify(prof);
+if (profJSON.indexOf('"Alice"') === -1) { console.error("FAIL 11.2: profile must carry ≤5 sample values"); process.exit(1); }
+if (profJSON.indexOf('"full-row"') !== -1) { console.error("FAIL 11.2: profile must not carry full rows"); process.exit(1); }
+if (prof.columns[0].samples.length > 5 || prof.columns[0].distinct !== 2 || prof.columns[1].nulls !== 0) { console.error("FAIL 11.2: profile column stats", JSON.stringify(prof.columns)); process.exit(1); }
+console.log("phase 11.2 deterministic pre-profile (headers + ≤5 samples, no rows): ok");
+
+// 11.3 Multi-hop join graph: corpus chain resolves into connected paths.
+const dsContacts = { id: "contacts", name: "Contacts", fields: ["ContactID", "FullName"], mapping: [{ name: "ContactID", type: "identifier", role: "identifier", concept: "contact", idx: 0 }, { name: "FullName", type: "text", role: "dimension", idx: 1 }], rowsArr: [["C1", "Alice"], ["C2", "Bob"]] };
+const dsLeads = { id: "leads", name: "Leads", fields: ["LeadID", "ContactID", "LeadSource"], mapping: [{ name: "LeadID", type: "identifier", role: "identifier", concept: "lead", idx: 0 }, { name: "ContactID", type: "identifier", role: "identifier", concept: "contact", idx: 1 }, { name: "LeadSource", type: "categorical", role: "dimension", idx: 2 }], rowsArr: [["L1", "C1", "web"], ["L2", "C2", "referral"]] };
+const dsSales = { id: "sales", name: "Sales", fields: ["SalesID", "ContactID", "Amount"], mapping: [{ name: "SalesID", type: "identifier", role: "identifier", concept: "sale", idx: 0 }, { name: "ContactID", type: "identifier", role: "identifier", concept: "contact", idx: 1 }, { name: "Amount", type: "number", role: "measure", concept: "amount", idx: 2 }], rowsArr: [["S1", "C1", "100"], ["S2", "C2", "200"]] };
+const graph = OB.resolveJoinGraph([dsContacts, dsLeads, dsSales], [
+  { from: "leads", fromCol: "ContactID", to: "contacts", toCol: "ContactID" },
+  { from: "sales", fromCol: "ContactID", to: "contacts", toCol: "ContactID" }
+]);
+if (!graph.paths.length) { console.error("FAIL 11.3: no connected path", JSON.stringify(graph)); process.exit(1); }
+const chain = graph.paths.find(p => p.nodes.indexOf("contacts") !== -1 && p.nodes.indexOf("sales") !== -1);
+if (!chain) { console.error("FAIL 11.3: must include the contacts-leads-sales chain"); process.exit(1); }
+if (graph.errors && graph.errors.length) { console.error("FAIL 11.3: unexpected errors", graph.errors); process.exit(1); }
+// Concept-absent join is REJECTED with a specific error.
+const badGraph = OB.resolveJoinGraph([dsContacts, dsLeads], [{ from: "contacts", fromCol: "FullName", to: "leads", toCol: "LeadID" }]);
+if (!badGraph.errors.length) { console.error("FAIL 11.3: concept-absent join must be rejected", JSON.stringify(badGraph)); process.exit(1); }
+console.log("phase 11.3 multi-hop join graph + absent-concept rejection: ok");
+
+// 11.4 Multi-hop enrichment: revenue per contact via Sale->Contact (single hop here; harness adds 2-hop).
+const enrichedPerContact = OB.multiHopEnrich(graph.paths.find(p => p.nodes.indexOf("contacts") !== -1 && p.nodes.indexOf("sales") !== -1).edges, [dsContacts, dsLeads, dsSales], { measureField: "Amount", groupConcept: "contact" });
+// Sale rows join to contact: S1->C1 (100), S2->C2 (200) => C1:100, C2:200 (group by ContactID on Contacts).
+const c1 = enrichedPerContact.find(e => e.key === "C1");
+if (!c1 || c1.value !== 100) { console.error("FAIL 11.4: revenue per contact must be correct", JSON.stringify(enrichedPerContact)); process.exit(1); }
+console.log("phase 11.4 multi-hop enrichment (revenue per contact): ok");
+
+// 11.4b True two-hop: revenue per contact via SaleLine→Sale→Contact.
+const dsLines = { id: "lines", name: "SalesLines", fields: ["LineID", "SalesID", "LinePrice"], mapping: [
+  { name: "LineID", type: "identifier", role: "identifier", concept: "sale_line", idx: 0 },
+  { name: "SalesID", type: "identifier", role: "identifier", concept: "sale", idx: 1 },
+  { name: "LinePrice", type: "number", role: "measure", concept: "amount", idx: 2 }
+], rowsArr: [["LN1", "S1", "40"], ["LN2", "S1", "60"], ["LN3", "S2", "75"], ["LN4", "S9", "999"]] }; // S9 has no sale -> must not contribute
+const graph2 = OB.resolveJoinGraph([dsContacts, dsSales, dsLines], [
+  { from: "lines", fromCol: "SalesID", to: "sales", toCol: "SalesID" },
+  { from: "sales", fromCol: "ContactID", to: "contacts", toCol: "ContactID" }
+]);
+const chain2 = graph2.paths.find(p => p.nodes.indexOf("lines") !== -1 && p.nodes.indexOf("contacts") !== -1);
+if (!chain2) { console.error("FAIL 11.4b: 2-hop chain not found", JSON.stringify(graph2.paths)); process.exit(1); }
+const revPerContact2 = OB.multiHopEnrich(chain2.edges, [dsContacts, dsSales, dsLines], { measureField: "LinePrice", groupConcept: "contact" });
+// LN1+LN2 -> S1 -> C1 = 100; LN3 -> S2 -> C2 = 75; LN4 -> S9 (no sale) dropped.
+const c1b = revPerContact2.find(e => e.key === "C1");
+const c2b = revPerContact2.find(e => e.key === "C2");
+if (!c1b || c1b.value !== 100 || !c2b || c2b.value !== 75) { console.error("FAIL 11.4b: 2-hop revenue per contact", JSON.stringify(revPerContact2)); process.exit(1); }
+if (revPerContact2.some(e => e.value === 999)) { console.error("FAIL 11.4b: orphan line must not contribute"); process.exit(1); }
+console.log("phase 11.4b true two-hop enrichment (SaleLine→Sale→Contact): ok");
+
+// 11.5 Blueprint validation: bad role + absent concept rejected; bounded corpus summary.
+const bpGood = OB.validateBlueprint({ datasets: [{ name: "Contacts", roleChanges: [{ column: "FullName", role: "text", concept: "contact" }] }], joins: [{ from: "Contacts", to: "Leads", on: "ContactID" }] }, []);
+if (!bpGood.ok) { console.error("FAIL 11.5: valid blueprint rejected", bpGood.errors); process.exit(1); }
+const bpBadRole = OB.validateBlueprint({ datasets: [{ name: "Contacts", roleChanges: [{ column: "FullName", role: "notarole" }] }] }, []);
+if (bpBadRole.ok || !/role set/.test(bpBadRole.errors.join(" "))) { console.error("FAIL 11.5: bad role must be rejected", bpBadRole.errors); process.exit(1); }
+const bpBadConcept = OB.validateBlueprint({ datasets: [{ name: "Contacts", roleChanges: [{ column: "X", concept: "ufo" }] }] }, []);
+if (bpBadConcept.ok || !/registry/.test(bpBadConcept.errors.join(" "))) { console.error("FAIL 11.5: absent concept must be rejected", bpBadConcept.errors); process.exit(1); }
+const summary = OB.corpusSummary([{ name: "Contacts.csv", rowCount: 2, dateRange: ["2024-01-05", "2024-02-10"], columns: [{ name: "ContactID", type: "identifier", role: "identifier", concept: "contact", distinct: 2, nulls: 0, samples: ["C1", "C2"] }] }]);
+if (summary.indexOf("Contacts.csv") === -1 || summary.indexOf("ContactID") === -1) { console.error("FAIL 11.5: corpus summary", summary); process.exit(1); }
+console.log("phase 11.5 blueprint validation + bounded corpus summary: ok");
+
+// 11.6 Persist review keyed by sorted file-shape hash.
+const shapeKey = OB.shapesKey([{ name: "Contacts.csv", fields: ["ContactID", "FullName"] }, { name: "Leads.csv", fields: ["LeadID", "ContactID"] }]);
+const shapeKey2 = OB.shapesKey([{ name: "Leads.csv", fields: ["LeadID", "ContactID"] }, { name: "Contacts.csv", fields: ["ContactID", "FullName"] }]);
+if (shapeKey !== shapeKey2) { console.error("FAIL 11.6: shapesKey must be order-independent", shapeKey, shapeKey2); process.exit(1); }
+OB.saveReview({ key: shapeKey, decisions: {} }, fakeLocalStorage);
+const loaded = OB.loadReview(fakeLocalStorage);
+if (!loaded || loaded.key !== shapeKey) { console.error("FAIL 11.6: review persist round-trip", JSON.stringify(loaded)); process.exit(1); }
+console.log("phase 11.6 review persistence by shape hash: ok");
+// ---------------------------------------------------------------------------
+
 // 1. Parse + validate
 const parsed = Core.parseCsvData(header, dataRows);
 console.log("rows:", parsed.rows.length, "errors:", JSON.stringify(parsed.errors));
